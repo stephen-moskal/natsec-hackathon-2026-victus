@@ -8,10 +8,12 @@ For the design rationale behind these choices, see [ARCHITECTURE.md](ARCHITECTUR
 
 ## 1. What this is
 
-The "edge API" is the bidirectional bridge between an edge device (a drone running a small reasoning loop) and the Foundry orchestrator (the operator's dashboard). The edge is an HTTP **client**, not a server — it dials out for both directions:
+The "edge API" is the bidirectional bridge between an edge device (a drone running a small reasoning loop) and the Foundry orchestrator (the operator's dashboard). The edge is an HTTP **client**, not a server — it dials out for both directions, using only standard Foundry REST APIs and a single bearer token:
 
-- **Outbound (telemetry):** edge POSTs JSON envelopes to a Foundry **HTTPS Listener URL**. Position, status, detections, reasoning traces, command acks, and mission events all ride this channel. One envelope per POST.
-- **Inbound (commands):** edge POSTs to a Foundry **TS v2 query function** `pollCommands(droneId, sinceMessageId?)` every ~2 s. Returns any pending commands addressed to this drone since the cursor.
+- **Outbound (telemetry):** edge POSTs flattened envelopes as records to the **Streams V2 `publishRecords`** endpoint of a streaming dataset (`raw_telemetry`). Position, status, detections, reasoning traces, command acks, and mission events all ride this channel. Each call accepts a batch of records, validated against the dataset schema. Required token scope: `api:streams-write`.
+- **Inbound (commands):** edge POSTs to the **Ontology Search Objects** endpoint every ~2 s, filtering for `command` rows with `deviceId == this drone AND status == PENDING`. Local dedup via a `seen_command_ids` set means each command is processed at most once. Required token scope: `api:ontologies-read`.
+
+This combination — Streams V2 + Search Objects — was chosen because it works on every Foundry stack (no enrollment-gated features), uses one bearer token end-to-end, and avoids the need for an HTTPS Listener or TypeScript v2 query function.
 
 Both directions speak the same envelope shape, defined once in [shared/protocol/schemas/](../shared/protocol/schemas/). The edge validates every message it sends *and* every message it receives against those schemas.
 
@@ -19,9 +21,9 @@ Both directions speak the same envelope shape, defined once in [shared/protocol/
 +----------------------------+         +-----------------------------+
 |  Operator (Foundry)        |         |  Drone (Jetson Orin)        |
 |                            |  cmd    |                             |
-|  Workshop dashboard        | ------> |  Reasoner (Phase 2)         |
+|  Workshop / curl             | ------> |  Reasoner (Phase 2)         |
 |  Issue Command action      |         |  victus_edge.main loop      |
-|  pollCommands query fn     | <------ |  Foundry comms client       |
+|  Search Objects (poll)     | <------ |  Foundry comms client       |
 |  Ontology objects          |  tlm    |                             |
 +----------------------------+         +-----------------------------+
             ^                                       |
@@ -138,14 +140,20 @@ ssh jetson 'cat > ~/victus/edge/.env' <<'EOF'
 VICTUS_DRONE_ID=uav-01
 
 # Foundry endpoints
-# - Listener URL: where the edge POSTs telemetry envelopes
-# - Functions URL: base URL for query functions; edge appends /pollCommands/execute
-FOUNDRY_LISTENER_URL=http://<orchestrator-host>:8080/listener/telemetry
-FOUNDRY_FUNCTIONS_URL=http://<orchestrator-host>:8080/functions
+# - Stack URL: the base of every Foundry API call (no trailing slash)
+# - Telemetry dataset RID: the streaming dataset for raw_telemetry
+# - Telemetry view RID: optional; if blank the latest stream view is used
+# - Ontology: API name OR RID of the ontology that holds the command object type
+# - Command object type: API name (real Foundry strips the auto-prefix on merge to main)
+FOUNDRY_STACK_URL=https://victus.usw-23.palantirfoundry.com
+FOUNDRY_TELEMETRY_DATASET_RID=ri.foundry.main.dataset.ed8731a7-4d5c-4741-96bb-fcc2f09608cf
+FOUNDRY_TELEMETRY_VIEW_RID=
+FOUNDRY_ONTOLOGY=ontology-abe5026d-72be-438c-980f-344a88cff4dc
+FOUNDRY_COMMAND_OBJECT_TYPE=command
 
 # Auth (STATIC = bearer token in env; OAUTH = client_credentials grant)
 FOUNDRY_AUTH_MODE=STATIC
-FOUNDRY_TOKEN=stub-token
+FOUNDRY_TOKEN=<personal-api-token-with-streams-write-and-ontologies-read>
 
 # Loop tuning
 COMMAND_POLL_INTERVAL_S=2.0
@@ -162,11 +170,9 @@ VICTUS_LOG_LEVEL=INFO
 EOF
 ```
 
-Replace `<orchestrator-host>` with the actual host:
-- **Local stub for development:** the Mac/laptop running [tools/foundry_stub.py](../tools/foundry_stub.py), reachable from the Jetson at e.g. `192.168.55.100:8080` (USB-C network) or its Wi-Fi IP.
-- **Real Foundry:** the listener URL Foundry generates when you create the HTTPS Listener (see [foundry/WORKSHOP_RUNBOOK.md](../foundry/WORKSHOP_RUNBOOK.md)), and the Functions REST gateway URL.
+For development against the local stub, point `FOUNDRY_STACK_URL` at the Mac (e.g. `http://192.168.55.100:8080`); the dataset RID, ontology, and object type values can be any non-empty placeholders (the stub doesn't validate them). Token can be any string.
 
-Full env-var reference is in [§ 11](#11-environment-variables-reference).
+Real-Foundry RIDs for this project are tracked in [foundry/README.md](../foundry/README.md). Full env-var reference is in [§ 11](#11-environment-variables-reference).
 
 ### 3.6 Run the edge
 
@@ -387,34 +393,80 @@ curl -s http://127.0.0.1:8080/admin/state | python3 -m json.tool
 
 ### 7.2 Against real Foundry
 
-Once [foundry/WORKSHOP_RUNBOOK.md](../foundry/WORKSHOP_RUNBOOK.md) is complete, the operator's path is:
+The action type `issue-command` (RID `ri.actions.main.action-type.72c1d608-fbe0-49fb-9e39-bcee55ade3dd`) is live. Operator path:
 
-1. Workshop click on the **Issue Command** action button (action type `issue-command`, RID `ri.actions.main.action-type.fc60ac14-905e-4ec9-b84f-f4d7a18ec760`). Form parameters → Command ontology object row written with `status=PENDING`.
-2. Edge's next `pollCommands` poll picks it up.
-3. Edge ACKs via the same telemetry channel.
-4. Workshop refreshes the command list; status flips `PENDING → ACKED`.
-
-**Programmatic equivalent** — Foundry's REST API for action types (requires a token with action-execute permission):
+1. **Workshop button** (when built — see [foundry/WORKSHOP_RUNBOOK.md](../foundry/WORKSHOP_RUNBOOK.md) § 4): click the action, form pre-fills, action runs, Command row written.
+2. **Or via curl** (works today, no Workshop required):
 
 ```bash
-curl -X POST 'https://victus.usw-23.palantirfoundry.com/api/v2/ontologies/<ontology-rid>/actions/issue-command/apply' \
-  -H "Authorization: Bearer ${FOUNDRY_TOKEN}" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "parameters": {
-      "message_id": "5b8c9f2e-1a3d-4e7c-9b8a-2f1d6c3e8a5b",
-      "device_id": "uav-01",
-      "verb": "HOLD",
-      "params_json": "{}",
-      "priority": "ROUTINE",
-      "status": "PENDING",
-      "mission_id": "",
-      "acked_at": "",
-      "completed_at": "",
-      "supersedes": ""
+TOKEN=<personal-api-token-with-ontologies-write>
+ONTOLOGY=ontology-abe5026d-72be-438c-980f-344a88cff4dc
+MID=$(uuidgen)
+NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+EXPIRY=$(date -u -v+1H +"%Y-%m-%dT%H:%M:%SZ")   # macOS; Linux: -d '+1 hour'
+
+curl -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  "https://victus.usw-23.palantirfoundry.com/api/v2/ontologies/$ONTOLOGY/actions/issue-command/apply" \
+  -d "{
+    \"parameters\": {
+      \"message_id\": \"$MID\",
+      \"device_id\": \"uav-01\",
+      \"mission_id\": \"none\",
+      \"verb\": \"HOLD\",
+      \"params_json\": \"{}\",
+      \"priority\": \"PRIORITY\",
+      \"status\": \"PENDING\",
+      \"issued_at\": \"$NOW\",
+      \"expires_at\": \"$EXPIRY\",
+      \"acked_at\": \"none\",
+      \"completed_at\": \"none\",
+      \"supersedes\": \"none\"
     }
-  }'
+  }"
 ```
+
+Expected response: `{"operationId":"ri.actions.main.action....","validation":{"result":"VALID",...}}`. Within ~2 s the edge picks it up.
+
+> **`"none"` placeholder**: All `command` properties are `nullable: false`, so empty values would fail validation. The convention is the literal string `"none"` for any optional field you don't want to set (`mission_id`, `acked_at`, `completed_at`, `supersedes`). Any non-empty string works; `"none"` is the convention used everywhere in this project for consistency.
+
+### 7.3 Behind the scenes — what the edge sees
+
+The action writes a Command row to `commands_v3` (`status=PENDING`). The edge's poll hits:
+
+```
+POST {stack}/api/v2/ontologies/{ontology}/objects/command/search
+{
+  "where": {
+    "type": "and",
+    "value": [
+      { "type": "eq", "field": "deviceId", "value": "uav-01" },
+      { "type": "eq", "field": "status",   "value": "PENDING" }
+    ]
+  },
+  "orderBy": { "fields": [{ "field": "messageId", "direction": "asc" }] },
+  "pageSize": 50
+}
+```
+
+Response shape:
+```json
+{
+  "data": [
+    {
+      "__primaryKey": "...", "__rid": "...", "__apiName": "command", "__title": "HOLD",
+      "messageId": "441CBAEA-...", "deviceId": "uav-01", "verb": "HOLD",
+      "paramsJson": "{}", "priority": "PRIORITY", "status": "PENDING",
+      "issuedAt": "2026-05-02T22:18:50Z", "expiresAt": "2026-05-02T23:18:50Z",
+      "missionId": "none", "ackedAt": "none", "completedAt": "none", "supersedes": "none"
+    }
+  ],
+  "totalCount": "1"
+}
+```
+
+**camelCase API names**: Foundry auto-converts snake_case property IDs to camelCase API names at deploy time (e.g. `device_id → deviceId`, `params_json → paramsJson`, `lat → latitude`). The edge's [foundry_client.py](../edge/src/victus_edge/comms/foundry_client.py) translates at the HTTP boundary; the wire envelope keeps snake_case throughout. See the property name table in [foundry/README.md](../foundry/README.md).
 
 ---
 
@@ -424,11 +476,11 @@ curl -X POST 'https://victus.usw-23.palantirfoundry.com/api/v2/ontologies/<ontol
 
 The poll loop lives in [edge/src/victus_edge/main.py](../edge/src/victus_edge/main.py) `_command_poller`. Every `COMMAND_POLL_INTERVAL_S`:
 
-1. Calls `FoundryClient.poll_commands(cursor)` — POST to `${FOUNDRY_FUNCTIONS_URL}/pollCommands/execute` with `{parameters: {droneId, sinceMessageId}}`.
-2. Server returns `{value: {commands: [Envelope, ...], cursor: <last_message_id>}}`.
-3. Each envelope is validated through `protocol.decode_command()` (raises `ProtocolError` on schema/version mismatch — invalid envelopes are dropped + logged, not ACKed).
-4. Edge logs the command and immediately ACKs with `result=ACCEPTED` via `client.ack_command(message_id, "ACCEPTED")`.
-5. `cursor` updated to the most recent `message_id` for the next poll.
+1. Calls `FoundryClient.poll_commands(cursor)` — POST to `${FOUNDRY_STACK_URL}/api/v2/ontologies/${FOUNDRY_ONTOLOGY}/objects/${FOUNDRY_COMMAND_OBJECT_TYPE}/search` with a `where` clause filtering on `deviceId == this drone AND status == PENDING`.
+2. Server returns `{data: [{...command object...}, ...], totalCount: "..."}`.
+3. Each ontology object is converted to a wire `Envelope` via `_object_to_envelope()` — translating camelCase API names (`messageId`, `deviceId`, `paramsJson`) back to snake_case envelope fields. The result is validated through `protocol.validate()` (raises `ProtocolError` on schema/version mismatch — invalid envelopes are dropped + logged, not ACKed).
+4. Local dedup: the `_seen_command_ids` set drops any `messageId` already processed (so the same PENDING row isn't re-emitted on every poll).
+5. Edge logs the command and immediately ACKs with `result=ACCEPTED` via `client.ack_command(message_id, "ACCEPTED")` — which goes back through the Streams V2 publishRecords path as a `CommandAck` event.
 
 ### 8.2 Handler hook (Phase 1.0 placeholder)
 
@@ -556,23 +608,27 @@ encode_telemetry("drone-uav-01", "MissionEvent", {
 
 ### 9.3 Direct HTTP (bypassing the Python library)
 
-Anything that can speak HTTPS can talk to the listener. From a shell on the Jetson:
+The Streams V2 endpoint accepts records that match the streaming dataset's schema (not the wire envelope shape directly). The edge flattens envelopes into records before POSTing. From a shell:
 
 ```bash
-curl -X POST "$FOUNDRY_LISTENER_URL" \
+curl -X POST \
   -H "Authorization: Bearer $FOUNDRY_TOKEN" \
   -H 'Content-Type: application/json' \
+  "$FOUNDRY_STACK_URL/api/v2/highScale/streams/datasets/$FOUNDRY_TELEMETRY_DATASET_RID/streams/master/publishRecords" \
   -d '{
-    "protocol_version": "0.2.0",
-    "message_id": "11111111-2222-3333-4444-555555555555",
-    "issued_at": "2026-05-02T18:00:00Z",
-    "sender": "drone-uav-01",
-    "kind": "telemetry",
-    "payload": {"event": "Status", "state": "NOMINAL"}
+    "records": [{
+      "protocol_version": "0.2.0",
+      "message_id": "11111111-2222-3333-4444-555555555555",
+      "issued_at": "2026-05-02T18:00:00Z",
+      "sender": "drone-uav-01",
+      "kind": "telemetry",
+      "event": "Status",
+      "payload_json": "{\"event\":\"Status\",\"state\":\"NOMINAL\"}"
+    }]
   }'
 ```
 
-This is useful for: smoke-testing connectivity, integration with non-Python tooling, or simulating a drone from the orchestrator side.
+Expected: HTTP 204 No Content. This is useful for smoke-testing connectivity from a host that doesn't have the edge package installed.
 
 ---
 
@@ -600,19 +656,21 @@ ssh -n jetson 'cd ~/victus/edge && source .venv/bin/activate && set -a && source
 
 ### 10.3 Switch from stub to real Foundry
 
-Edit `~/victus/edge/.env` on the Jetson, change three lines, restart:
+Edit `~/victus/edge/.env` on the Jetson — swap five vars, restart:
 
 ```bash
 ssh jetson 'sed -i \
-  -e "s|^FOUNDRY_LISTENER_URL=.*|FOUNDRY_LISTENER_URL=https://victus.usw-23.palantirfoundry.com/listener/<unique-id>|" \
-  -e "s|^FOUNDRY_FUNCTIONS_URL=.*|FOUNDRY_FUNCTIONS_URL=https://victus.usw-23.palantirfoundry.com/api/v2/ontologies/<ontology-rid>/queries|" \
+  -e "s|^FOUNDRY_STACK_URL=.*|FOUNDRY_STACK_URL=https://victus.usw-23.palantirfoundry.com|" \
+  -e "s|^FOUNDRY_TELEMETRY_DATASET_RID=.*|FOUNDRY_TELEMETRY_DATASET_RID=ri.foundry.main.dataset.ed8731a7-4d5c-4741-96bb-fcc2f09608cf|" \
+  -e "s|^FOUNDRY_ONTOLOGY=.*|FOUNDRY_ONTOLOGY=ontology-abe5026d-72be-438c-980f-344a88cff4dc|" \
+  -e "s|^FOUNDRY_COMMAND_OBJECT_TYPE=.*|FOUNDRY_COMMAND_OBJECT_TYPE=command|" \
   -e "s|^FOUNDRY_TOKEN=.*|FOUNDRY_TOKEN=<your-foundry-personal-token>|" \
   ~/victus/edge/.env'
 ssh jetson 'pkill -f victus_edge.main'
 ssh -n jetson 'cd ~/victus/edge && source .venv/bin/activate && set -a && source .env && set +a && nohup bash -c "exec python -m victus_edge.main" </dev/null >/tmp/edge.log 2>&1 & disown'
 ```
 
-The on-the-wire shape is identical between stub and real Foundry — that's the whole point of the contract. No code changes needed.
+The on-the-wire shapes are identical between stub and real Foundry (the stub mirrors Streams V2 publishRecords + Search Objects exactly, including camelCase property names) — no edge code changes needed.
 
 ### 10.4 Common errors
 
@@ -645,10 +703,13 @@ Won't help reach the orchestrator if the orchestrator is on a guest/event networ
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `VICTUS_DRONE_ID` | yes | — | Stable identity. Becomes `sender = "drone-${VICTUS_DRONE_ID}"`. |
-| `FOUNDRY_LISTENER_URL` | yes | — | Full URL to the inbound telemetry endpoint. |
-| `FOUNDRY_FUNCTIONS_URL` | yes | — | Base URL for query functions. Edge appends `/pollCommands/execute`. |
+| `FOUNDRY_STACK_URL` | yes | — | Foundry stack base URL (no trailing slash). E.g. `https://victus.usw-23.palantirfoundry.com`. |
+| `FOUNDRY_TELEMETRY_DATASET_RID` | yes | — | Streaming dataset RID for `raw_telemetry`. Edge POSTs records to this dataset's `publishRecords` endpoint. |
+| `FOUNDRY_TELEMETRY_VIEW_RID` | no | (latest) | Streams V2 view RID. If unset, the latest view on the master branch is used (recommended). |
+| `FOUNDRY_ONTOLOGY` | yes | — | Ontology API name OR RID (e.g. `ontology-abe5026d-72be-438c-980f-344a88cff4dc`). |
+| `FOUNDRY_COMMAND_OBJECT_TYPE` | yes | — | API name of the Command object type (e.g. `command`; Foundry auto-strips the namespace prefix on merge to main). |
 | `FOUNDRY_AUTH_MODE` | no | `STATIC` | `STATIC` (bearer in env) or `OAUTH` (client_credentials grant). |
-| `FOUNDRY_TOKEN` | yes if STATIC | — | Bearer token. |
+| `FOUNDRY_TOKEN` | yes if STATIC | — | Bearer token. Required scopes: `api:streams-write`, `api:ontologies-read`, `api:ontologies-write` (the last only if also issuing actions from this token). |
 | `FOUNDRY_OAUTH_TOKEN_URL` | yes if OAUTH | — | OAuth token endpoint. |
 | `FOUNDRY_CLIENT_ID` | yes if OAUTH | — | OAuth client id. |
 | `FOUNDRY_CLIENT_SECRET` | yes if OAUTH | — | OAuth client secret. |
@@ -711,11 +772,20 @@ python3 tools/foundry_stub.py --port 8080
 ssh -n jetson 'cd ~/victus/edge && source .venv/bin/activate && set -a && source .env && set +a && nohup bash -c "exec python -m victus_edge.main" </dev/null >/tmp/edge.log 2>&1 & disown'
 ```
 
-**Issue a command (operator):**
+**Issue a command against the local stub (operator):**
 ```bash
 curl -X POST http://127.0.0.1:8080/admin/inject_command \
   -H 'Content-Type: application/json' \
   -d '{"drone_id":"uav-01","verb":"HOLD"}'
+```
+
+**Issue a command against real Foundry (operator):**
+```bash
+TOKEN=...; ONTOLOGY=ontology-abe5026d-72be-438c-980f-344a88cff4dc
+MID=$(uuidgen); NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ"); EXP=$(date -u -v+1H +"%Y-%m-%dT%H:%M:%SZ")
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  "https://victus.usw-23.palantirfoundry.com/api/v2/ontologies/$ONTOLOGY/actions/issue-command/apply" \
+  -d "{\"parameters\":{\"message_id\":\"$MID\",\"device_id\":\"uav-01\",\"mission_id\":\"none\",\"verb\":\"HOLD\",\"params_json\":\"{}\",\"priority\":\"PRIORITY\",\"status\":\"PENDING\",\"issued_at\":\"$NOW\",\"expires_at\":\"$EXP\",\"acked_at\":\"none\",\"completed_at\":\"none\",\"supersedes\":\"none\"}}"
 ```
 
 **Tail edge logs:**

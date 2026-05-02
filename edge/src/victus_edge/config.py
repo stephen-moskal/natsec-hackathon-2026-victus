@@ -13,8 +13,12 @@ from dataclasses import dataclass
 class Config:
     drone_id: str
 
-    foundry_listener_url: str
-    foundry_functions_url: str
+    # Foundry endpoints — point at either real Foundry or the local stub.
+    foundry_stack_url: str               # e.g. https://victus.usw-23.palantirfoundry.com
+    foundry_telemetry_dataset_rid: str   # streaming dataset for raw_telemetry
+    foundry_telemetry_view_rid: str | None  # optional but recommended for streams V2
+    foundry_ontology: str                # ontology API name OR RID
+    foundry_command_object_type: str     # API name of the command object type (e.g. "pzqmccug.command")
 
     foundry_auth_mode: str         # "STATIC" | "OAUTH"
     foundry_token: str | None      # used when auth_mode=STATIC
@@ -56,8 +60,11 @@ def load() -> Config:
 
     return Config(
         drone_id=_required("VICTUS_DRONE_ID"),
-        foundry_listener_url=_required("FOUNDRY_LISTENER_URL"),
-        foundry_functions_url=_required("FOUNDRY_FUNCTIONS_URL"),
+        foundry_stack_url=_required("FOUNDRY_STACK_URL").rstrip("/"),
+        foundry_telemetry_dataset_rid=_required("FOUNDRY_TELEMETRY_DATASET_RID"),
+        foundry_telemetry_view_rid=os.environ.get("FOUNDRY_TELEMETRY_VIEW_RID") or None,
+        foundry_ontology=_required("FOUNDRY_ONTOLOGY"),
+        foundry_command_object_type=_required("FOUNDRY_COMMAND_OBJECT_TYPE"),
         foundry_auth_mode=auth_mode,
         foundry_token=foundry_token,
         foundry_oauth_token_url=os.environ.get("FOUNDRY_OAUTH_TOKEN_URL"),
