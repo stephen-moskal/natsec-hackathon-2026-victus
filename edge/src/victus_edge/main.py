@@ -17,7 +17,7 @@ import logging
 import structlog
 
 from .comms.auth import TokenProvider
-from .comms.foundry_client import FoundryClient
+from .comms.foundry_client import FoundryClient, FoundryEndpoints
 from .comms.protocol import encode_telemetry
 from .config import Config, load
 
@@ -87,10 +87,16 @@ async def run_async() -> None:
     log.info("edge_starting", drone_id=cfg.drone_id, auth_mode=cfg.foundry_auth_mode)
 
     token_provider = _build_token_provider(cfg)
+    endpoints = FoundryEndpoints(
+        stack_url=cfg.foundry_stack_url,
+        telemetry_dataset_rid=cfg.foundry_telemetry_dataset_rid,
+        telemetry_view_rid=cfg.foundry_telemetry_view_rid,
+        ontology=cfg.foundry_ontology,
+        command_object_type=cfg.foundry_command_object_type,
+    )
     async with FoundryClient(
         token_provider=token_provider,
-        listener_url=cfg.foundry_listener_url,
-        functions_url=cfg.foundry_functions_url,
+        endpoints=endpoints,
         drone_id=cfg.drone_id,
         buffer_path=cfg.telemetry_buffer_path,
     ) as client:
