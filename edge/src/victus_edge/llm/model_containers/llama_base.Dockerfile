@@ -12,11 +12,21 @@ FROM dustynv/llama_cpp:r36.4.0
 
 WORKDIR /opt/victus_edge
 
-# Light apt deps for OpenCV runtime
+# Light apt deps for OpenCV runtime + GStreamer (used for hardware-accelerated
+# video decode via Tegra-native plugins, mounted in by nvidia-container-runtime).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ffmpeg libsm6 libxext6 libgl1 \
-        curl \
+        ffmpeg libsm6 libxext6 libgl1 curl \
+        gstreamer1.0-tools \
+        gstreamer1.0-plugins-base \
+        gstreamer1.0-plugins-good \
+        gstreamer1.0-plugins-bad \
+        gstreamer1.0-libav \
+        python3-gi python3-gst-1.0 \
+        gir1.2-gstreamer-1.0 \
+        libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 \
     && rm -rf /var/lib/apt/lists/*
+
+ENV GST_PLUGIN_PATH=/usr/lib/aarch64-linux-gnu/gstreamer-1.0:/usr/lib/aarch64-linux-gnu/tegra-egl/gstreamer-1.0:/usr/lib/aarch64-linux-gnu/tegra/gstreamer-1.0
 
 # Python deps. Same Jetson AI Lab mirror used previously for any aarch64 wheels.
 ENV PIP_EXTRA_INDEX_URL="https://pypi.jetson-ai-lab.io/jp6/cu126 https://pypi.ngc.nvidia.com"
