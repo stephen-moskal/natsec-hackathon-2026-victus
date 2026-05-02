@@ -1,8 +1,8 @@
 #!/bin/bash
-# Entrypoint: launches llama-server in the background, waits for it to come
-# up, then runs the victus_edge harness in the foreground. Forwards CLI args
-# straight through to `python3 -m victus_edge.main`, so any args passed via
-# `docker run image -- ...` reach the Python entry point.
+# Entrypoint: launches llama-server in the foreground.
+# (The victus_edge Python harness is intentionally NOT launched here — it has
+# its own runtime contract — Foundry credentials, schemas, etc. — and is run
+# separately. See edge/README.md for how to invoke `python3 -m victus_edge.main`.)
 set -euo pipefail
 
 : "${VICTUS_LLM_MODEL_PATH:?VICTUS_LLM_MODEL_PATH not set — should be set by the model-specific image}"
@@ -31,7 +31,7 @@ echo "[entrypoint] starting llama-server with $(basename "$VICTUS_LLM_MODEL_PATH
 # (once for image decode, once for text post-image), so peak = 2× ubatch
 # buffer. With the default batch sizes Gemma 4's twin allocations OOM the
 # 8 GB Jetson; -b 64 -ub 32 fits safely.
-llama-server \
+exec llama-server \
     -m "$VICTUS_LLM_MODEL_PATH" \
     --mmproj "$VICTUS_LLM_MMPROJ_PATH" \
     -ngl 99 \
@@ -40,39 +40,7 @@ llama-server \
     -ub "$UBATCH" \
     --parallel 1 \
     --cache-ram 0 \
-    --host 127.0.0.1 \
+    --host 0.0.0.0 \
     --port 8080 \
     --jinja \
-    > /tmp/llama-server.log 2>&1 &
-
-LLAMA_PID=$!
-trap 'kill $LLAMA_PID 2>/dev/null || true; wait $LLAMA_PID 2>/dev/null || true' EXIT TERM INT
-
-# Wait for /health to report "ok"
-echo "[entrypoint] waiting for llama-server to load model..."
-for i in $(seq 1 180); do
-    if curl -sf http://127.0.0.1:8080/health 2>/dev/null | grep -q '"ok"'; then
-        echo "[entrypoint] llama-server ready in ${i}s"
-        break
-    fi
-    if ! kill -0 $LLAMA_PID 2>/dev/null; then
-        echo "[entrypoint] llama-server died during startup — last 50 log lines:"
-        tail -50 /tmp/llama-server.log
-        exit 1
-    fi
-    sleep 1
-done
-
-# Run the harness. CLI args from `docker run ... --arg1 ...` arrive here as $@.
-echo "[entrypoint] launching victus_edge harness with args: $*"
-python3 -m victus_edge.main "$@"
-HARNESS_RC=$?
-
-# Dump server timing summary so per-request timings are visible to the host.
-if [ "${VICTUS_DUMP_SERVER_LOG:-1}" = "1" ]; then
-    echo
-    echo "[entrypoint] === llama-server log (last 200 lines) ==="
-    tail -200 /tmp/llama-server.log 2>/dev/null | grep -E "(prompt eval|^[ ]+eval time|total time|process_chun|image slice|image decoded|^slot)" || tail -200 /tmp/llama-server.log
-    echo "[entrypoint] === end llama-server log ==="
-fi
-exit "$HARNESS_RC"
+    "$@"

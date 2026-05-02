@@ -28,8 +28,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV GST_PLUGIN_PATH=/usr/lib/aarch64-linux-gnu/gstreamer-1.0:/usr/lib/aarch64-linux-gnu/tegra-egl/gstreamer-1.0:/usr/lib/aarch64-linux-gnu/tegra/gstreamer-1.0
 
-# Python deps. Same Jetson AI Lab mirror used previously for any aarch64 wheels.
-ENV PIP_EXTRA_INDEX_URL="https://pypi.jetson-ai-lab.io/jp6/cu126 https://pypi.ngc.nvidia.com"
+# Override dustynv's baked-in pypi.jetson-ai-lab.dev primary index (DNS-broken).
+ENV PIP_INDEX_URL=https://pypi.org/simple/
 
 COPY requirements.txt /opt/victus_edge/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \

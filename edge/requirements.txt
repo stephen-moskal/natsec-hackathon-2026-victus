@@ -1,8 +1,23 @@
-# Lean runtime deps for the llama.cpp-based stack. The model itself runs in
-# llama-server (provided by the dustynv/llama_cpp Jetson base image); this
-# Python process just drives the video pipeline and posts to localhost:8080.
+# Runtime deps for victus_edge edge node — pinned to versions that resolved
+# successfully for the dustynv/llama_cpp:r36.4.0 (JetPack 6.x, Python 3.10)
+# build on 2026-05-02. Full transitive lockfile lives at edge/requirements.lock.
+#
+# Mirrors [project] dependencies in pyproject.toml plus vision/HTTP runtime
+# packages used by the Python harness inside the LLM container.
+#
+# When bumping a dep, regenerate the lock with:
+#   docker run --rm victus_edge/qwen3vl:latest pip freeze > edge/requirements.lock
 
-opencv-python-headless>=4.10
-pillow>=10.0
-numpy>=1.26,<2.0
-requests>=2.32
+# Core (must match [project] dependencies in pyproject.toml)
+httpx==0.28.1
+jsonschema==4.26.0
+pyyaml==6.0.2
+structlog==25.5.0
+tenacity==9.1.4
+uvloop==0.22.1; sys_platform != 'win32'
+
+# Vision / HTTP runtime extras
+opencv-python-headless==4.11.0.86  # highest version compatible with numpy<2.0
+pillow==12.2.0
+numpy==1.26.4
+requests==2.32.3
