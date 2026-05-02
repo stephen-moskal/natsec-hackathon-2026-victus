@@ -1,0 +1,2 @@
+message_id,device_id,mission_id,verb,params_json,priority,status,issued_at,expires_at,acked_at,completed_at,supersedes
+00000000-0000-0000-0000-000000000000,uav-01,,HOLD,{},ROUTINE,EXPIRED,2026-05-02T17:00:00Z,2026-05-02T17:05:00Z,,,

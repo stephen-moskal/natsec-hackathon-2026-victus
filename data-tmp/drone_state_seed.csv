@@ -1,0 +1,4 @@
+drone_id,callsign,protocol_version,last_seen_at,lat,lon,alt_m,heading_deg,speed_mps,battery_pct,state,current_mission_id,link_status
+uav-01,ALPHA,0.2.0,2026-05-02T18:00:00Z,42.3601,-71.0589,100.0,90.0,0.0,95.0,NOMINAL,,ONLINE
+uav-02,BRAVO,0.2.0,2026-05-02T18:00:00Z,42.3651,-71.0552,120.0,180.0,0.0,88.0,NOMINAL,,ONLINE
+uav-03,CHARLIE,0.2.0,2026-05-02T18:00:00Z,42.3550,-71.0633,110.0,270.0,0.0,72.0,NOMINAL,,ONLINE
