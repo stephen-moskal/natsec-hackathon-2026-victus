@@ -1,0 +1,8 @@
+# Lean runtime deps for the llama.cpp-based stack. The model itself runs in
+# llama-server (provided by the dustynv/llama_cpp Jetson base image); this
+# Python process just drives the video pipeline and posts to localhost:8080.
+
+opencv-python-headless>=4.10
+pillow>=10.0
+numpy>=1.26,<2.0
+requests>=2.32
