@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://victus.natsec/protocol/0.1.0/command.schema.json",
+  "$id": "https://victus.natsec/protocol/0.2.0/command.schema.json",
   "title": "VICTUS command payload",
   "type": "object",
   "required": ["drone_id", "verb", "priority", "expires_at", "params"],
@@ -9,7 +9,7 @@
     "drone_id": { "type": "string" },
     "verb": {
       "type": "string",
-      "enum": ["SCAN", "LOITER", "INVESTIGATE", "FOLLOW", "RTB", "HOLD", "ABORT"]
+      "enum": ["SCAN", "LOITER", "INVESTIGATE", "FOLLOW", "RTB", "HOLD", "ABORT", "ASSIGN_MISSION"]
     },
     "priority": {
       "type": "string",

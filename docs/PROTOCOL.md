@@ -40,6 +40,7 @@ A command's `payload` always has a `verb` and verb-specific `params`.
 | `RTB` | Return to base. | `base` (geojson point) optional; defaults to launch point |
 | `HOLD` | Stop and hover safely. | none |
 | `ABORT` | Cancel current intent and execute safe fallback. | `reason` (string) |
+| `ASSIGN_MISSION` | Update the LLM system-prompt fragment for this drone (delivers a mission). | `mission_id` (string), `name` (string), `system_prompt` (string), optional `priority`, `roe_profile` |
 
 ### Modifiers (apply to any verb)
 
@@ -108,3 +109,8 @@ NOMINAL ──┬── DEGRADED ──┬── BINGO ──── RTB ──�
 
 - `0.x.y` during the hackathon. Anything goes.
 - `1.0.0` locks the verb set. Adding a verb is a minor bump. Changing required params is a major bump.
+
+### Changelog
+
+- **0.2.0** — added `ASSIGN_MISSION` verb so operator missions (LLM system-prompt fragments) ride the existing command channel instead of requiring a separate fetch. Schemas in `shared/protocol/schemas/` updated; both edge and Foundry must be redeployed.
+- **0.1.0** — initial protocol.

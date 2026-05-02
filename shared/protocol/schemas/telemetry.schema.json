@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://victus.natsec/protocol/0.1.0/telemetry.schema.json",
+  "$id": "https://victus.natsec/protocol/0.2.0/telemetry.schema.json",
   "title": "VICTUS telemetry payload",
   "type": "object",
   "required": ["event"],
