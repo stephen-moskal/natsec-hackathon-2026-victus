@@ -3,10 +3,10 @@
 # Both services run llama-server in the background + the victus_edge Python
 # harness in the foreground. Profiles select which model is loaded.
 #
-# Usage (run from edge/):
-#   docker compose -f src/victus_edge/llm/model_containers/compose.yaml --profile qwen3vl build
-#   docker compose -f src/victus_edge/llm/model_containers/compose.yaml --profile qwen3vl up
-#   docker compose -f src/victus_edge/llm/model_containers/compose.yaml --profile gemma4 up
+# Usage (run from project root):
+#   docker compose -f edge/src/victus_edge/llm/model_containers/compose.yaml --profile qwen3vl build
+#   docker compose -f edge/src/victus_edge/llm/model_containers/compose.yaml --profile qwen3vl up
+#   docker compose -f edge/src/victus_edge/llm/model_containers/compose.yaml --profile gemma4 up
 #
 # Only one model can run at a time on the 8 GB Jetson; profile selection
 # enforces that.
@@ -20,8 +20,8 @@ services:
     profiles: ["qwen3vl"]
     image: victus_edge/qwen3vl:latest
     build:
-      context: ../../../..
-      dockerfile: src/victus_edge/llm/model_containers/qwen3vl.Dockerfile
+      context: ../../../../..
+      dockerfile: edge/src/victus_edge/llm/model_containers/qwen3vl.Dockerfile
       args:
         L4T_TAG: r36.4.0
     runtime: nvidia
@@ -44,8 +44,8 @@ services:
     profiles: ["gemma4"]
     image: victus_edge/gemma4:latest
     build:
-      context: ../../../..
-      dockerfile: src/victus_edge/llm/model_containers/gemma4.Dockerfile
+      context: ../../../../..
+      dockerfile: edge/src/victus_edge/llm/model_containers/gemma4.Dockerfile
       args:
         L4T_TAG: r36.4.0
     runtime: nvidia

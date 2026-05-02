@@ -13,8 +13,8 @@
 #   ~/models/gemma4/gemma-4-E4B-it-Q4_K_M.gguf
 #   ~/models/gemma4/mmproj-gemma-4-E4B-it-BF16.gguf
 #
-# Build (run from edge/):
-#   docker build -f src/victus_edge/llm/model_containers/gemma4.Dockerfile \
+# Build (run from project root — needs shared/ in build context):
+#   docker build -f edge/src/victus_edge/llm/model_containers/gemma4.Dockerfile \
 #                -t victus_edge/gemma4:latest .
 #
 # Run:
@@ -56,18 +56,33 @@ RUN cd /opt/llama.cpp && \
     cp build/bin/libggml*.so /usr/local/lib/ 2>/dev/null || true && \
     ldconfig
 
-ENV PIP_EXTRA_INDEX_URL="https://pypi.jetson-ai-lab.io/jp6/cu126 https://pypi.ngc.nvidia.com"
+# dustynv/llama_cpp's baked-in pip.conf points at https://pypi.jetson-ai-lab.dev
+# which is currently DNS-unresolvable. Override to use vanilla pypi.org for our
+# install steps. Re-add a Jetson-AI-Lab index ONLY for steps that need
+# CUDA-enabled aarch64 wheels (e.g., llama-cpp-python, torch).
+ENV PIP_INDEX_URL=https://pypi.org/simple/
 
-COPY requirements.txt /opt/victus_edge/requirements.txt
+COPY edge/requirements.txt /opt/victus_edge/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \
  && pip install --no-cache-dir -r /opt/victus_edge/requirements.txt
 
 # Models are intentionally NOT baked in — they're bind-mounted from the host
 # at runtime via `-v ~/models:/opt/models:ro` (see header).
 
-COPY src/           /opt/victus_edge/src/
-COPY pyproject.toml /opt/victus_edge/
-COPY src/victus_edge/llm/model_containers/entrypoint.sh /opt/victus_edge/entrypoint.sh
+COPY edge/src/           /opt/victus_edge/src/
+COPY edge/pyproject.toml /opt/victus_edge/
+
+# Shared protocol JSON schemas — protocol.py reads these at import time from
+# /opt/shared (its _REPO_ROOT computation lands at /opt inside the container).
+COPY shared/ /opt/shared/
+
+# Install the victus_edge package itself (editable) — pulls in pyproject.toml's
+# core deps (httpx, structlog, pyyaml, uvloop, jsonschema, tenacity).
+# requirements.txt above already covers them too with exact pins, so this is
+# mostly a no-op for deps but registers the package + console script.
+RUN pip install --no-cache-dir -e /opt/victus_edge
+
+COPY edge/src/victus_edge/llm/model_containers/entrypoint.sh /opt/victus_edge/entrypoint.sh
 RUN chmod +x /opt/victus_edge/entrypoint.sh
 
 ENV PYTHONPATH=/opt/victus_edge/src \
