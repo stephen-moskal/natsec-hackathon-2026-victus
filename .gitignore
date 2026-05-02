@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Build artifacts
+build/
+dist/
+*.so
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local data and runtime state
+edge/runtime/
+edge/data/
+*.sqlite
+*.jsonl
+
+# Foundry local artifacts
+foundry/transforms-python/build/
+foundry/functions/dist/
+foundry/functions/node_modules/
+
+# Models (do not commit)
+*.gguf
+*.safetensors
+*.bin
+edge/models/

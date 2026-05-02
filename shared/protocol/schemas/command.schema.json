@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://victus.natsec/protocol/0.1.0/command.schema.json",
+  "title": "VICTUS command payload",
+  "type": "object",
+  "required": ["drone_id", "verb", "priority", "expires_at", "params"],
+  "additionalProperties": false,
+  "properties": {
+    "drone_id": { "type": "string" },
+    "verb": {
+      "type": "string",
+      "enum": ["SCAN", "LOITER", "INVESTIGATE", "FOLLOW", "RTB", "HOLD", "ABORT"]
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["ROUTINE", "PRIORITY", "IMMEDIATE", "FLASH"]
+    },
+    "roe": {
+      "type": "string",
+      "description": "Optional ROE profile id."
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "supersedes": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Optional message_id of a command this one replaces."
+    },
+    "params": {
+      "type": "object",
+      "description": "Verb-specific parameters. Validated per-verb at the application layer; see docs/PROTOCOL.md."
+    }
+  }
+}

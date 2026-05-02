@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://victus.natsec/protocol/0.1.0/envelope.schema.json",
+  "title": "VICTUS message envelope",
+  "type": "object",
+  "required": ["protocol_version", "message_id", "issued_at", "sender", "kind", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "protocol_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semver of the protocol this message conforms to."
+    },
+    "message_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "issued_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp at the sender."
+    },
+    "sender": {
+      "type": "string",
+      "description": "Either 'foundry-orchestrator' or 'drone-<id>'."
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["command", "telemetry"]
+    },
+    "payload": {
+      "type": "object"
+    }
+  }
+}
