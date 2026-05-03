@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://victus.natsec/protocol/0.2.0/envelope.schema.json",
+  "$id": "https://victus.natsec/protocol/0.3.0/envelope.schema.json",
   "title": "VICTUS message envelope",
   "type": "object",
   "required": ["protocol_version", "message_id", "issued_at", "sender", "kind", "payload"],

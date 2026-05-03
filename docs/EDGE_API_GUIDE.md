@@ -31,7 +31,7 @@ Both directions speak the same envelope shape, defined once in [shared/protocol/
             +--------- (commands + telemetry) -------+
 ```
 
-Current protocol version: **0.2.0**. Both sides MUST match the major version. See [§ 10](#10-extending-the-protocol).
+Current protocol version: **0.3.0** (aligned with [drone_command_policy.json](../drone_command_policy.json)). Both sides MUST match the major version. See [§ 10](#10-extending-the-protocol).
 
 ---
 
@@ -128,7 +128,7 @@ This pulls `httpx`, `jsonschema`, `pyyaml`, `structlog`, `tenacity`, `uvloop` pl
 ssh jetson 'cd ~/victus/edge && source .venv/bin/activate && python -c "from victus_edge.comms import protocol, foundry_client, auth; from victus_edge import config, main; print(\"imports ok, proto\", protocol.PROTOCOL_VERSION)"'
 ```
 
-Expected: `imports ok, proto 0.2.0`. If you see `FileNotFoundError: shared/protocol/schemas/...` you skipped the `shared` rsync — go back to [§ 3.2](#32-push-the-edge-code).
+Expected: `imports ok, proto 0.3.0`. If you see `FileNotFoundError: shared/protocol/schemas/...` you skipped the `shared` rsync — go back to [§ 3.2](#32-push-the-edge-code).
 
 ### 3.5 Configure `.env`
 
@@ -219,7 +219,7 @@ Every message — whether command or telemetry — uses the same outer envelope:
 
 ```json
 {
-  "protocol_version": "0.2.0",
+  "protocol_version": "0.3.0",
   "message_id": "f4c1...",
   "issued_at": "2026-05-02T18:00:00Z",
   "sender": "drone-uav-01",
@@ -246,18 +246,23 @@ Schemas:
 
 ## 5. Command vocabulary (orchestrator → edge)
 
-Verbs are exhaustive — anything else is rejected with `CommandAck { result: REJECTED, reason: "unknown_verb" }`.
+The verb dictionary is locked to [drone_command_policy.json](../drone_command_policy.json) — the plain-English vocabulary the on-board LLM is trained against. Anything else is rejected with `CommandAck { result: UNABLE, reason: "command unclear, say again" }` per policy rule.
 
-| Verb | Meaning | Required `params` | Phase |
+Verbs are listed in **policy priority** order (1 = highest precedence on the wire — `ABORT` and `RTB` execute even with no link).
+
+| Pri | Verb | Required `params` | Optional `params` |
 |---|---|---|---|
-| `SCAN` | Sweep an area, report detections. | `area` (GeoJSON Polygon), `pattern` ("grid" \| "spiral"), `altitude_m` | 1.0 (handler stub) |
-| `LOITER` | Hold position or orbit a point. | `center` (GeoJSON Point), `radius_m`, `altitude_m` | 1.0 |
-| `INVESTIGATE` | Move to a target, observe, report. | `target` (GeoJSON Point or `detection_id`), `dwell_s` | 1.0 |
-| `FOLLOW` | Track a moving contact. | `contact_id`, `standoff_m`, `altitude_m` | 1.0 |
-| `RTB` | Return to base. | optional `base` (GeoJSON Point); defaults to launch point | 1.0 |
-| `HOLD` | Stop and hover safely. | none (`{}`) | 1.0 — used as the round-trip smoke command |
-| `ABORT` | Cancel current intent and execute safe fallback. | `reason` (string) | 1.0 |
-| `ASSIGN_MISSION` | Update the LLM system-prompt fragment for this drone (delivers a mission). | `mission_id`, `name`, `system_prompt`, optional `priority`, `roe_profile` | 0.2.0 added |
+| 1 | `ABORT` | — | — |
+| 2 | `RTB` | — | — |
+| 3 | `GOTO` | `destination` (lat/lon, MGRS, or named landmark) | `altitude` (ft AGL) |
+| 4 | `ALTITUDE` | `direction` (`CLIMB`\|`DESCEND`), `altitude` (ft AGL) | — |
+| 5 | `LOITER` | `duration` (ISO 8601, e.g. `PT10M`) | `location` (defaults to current) |
+| 6 | `SEARCH` | `area`, `target` (plain English) | `pattern` (defaults to "parallel sweep") |
+| 7 | `OBSERVE` | `target` | `duration` (default `PT30M`), `reportInterval` (default `PT60S`) |
+| 8 | `REPORT` | — | `subject` (default "current scene"), `interval` (one-shot if absent) |
+| 9 | `TRACK` | `target` | `standOffMeters` |
+| 10 | `IDENTIFY` | `target` | — |
+| — | `ASSIGN_MISSION` | `mission_id`, `name`, `system_prompt` | `priority`, `roe_profile` (operator-side, delivers an LLM system-prompt fragment) |
 
 **Modifiers** (every command):
 
@@ -267,7 +272,7 @@ Verbs are exhaustive — anything else is rejected with `CommandAck { result: RE
 | `verb` | enum | yes | One of the verbs above. |
 | `priority` | enum | yes | `ROUTINE` \| `PRIORITY` \| `IMMEDIATE` \| `FLASH`. Higher preempts lower. |
 | `expires_at` | ISO 8601 UTC | yes | After this, the edge falls back to safe behavior. |
-| `params` | object | yes | Verb-specific. May be `{}` for `HOLD`. |
+| `params` | object | yes | Verb-specific. May be `{}` for `ABORT`, `RTB`, and `REPORT`. |
 | `roe` | string | no | ROE profile id. Edge enforces what it knows; unknown profile → `ABORT`. |
 | `supersedes` | UUID | no | Optional `message_id` of a command this one replaces. |
 
@@ -275,20 +280,20 @@ Verbs are exhaustive — anything else is rejected with `CommandAck { result: RE
 
 ```json
 {
-  "protocol_version": "0.2.0",
+  "protocol_version": "0.3.0",
   "message_id": "5b8c9f2e-1a3d-4e7c-9b8a-2f1d6c3e8a5b",
   "issued_at": "2026-05-02T18:00:00Z",
   "sender": "foundry-orchestrator",
   "kind": "command",
   "payload": {
     "drone_id": "uav-01",
-    "verb": "SCAN",
+    "verb": "SEARCH",
     "priority": "PRIORITY",
     "expires_at": "2026-05-02T18:30:00Z",
     "params": {
-      "area": { "type": "Polygon", "coordinates": [[[ -71.06, 42.36 ], [ -71.05, 42.36 ], [ -71.05, 42.37 ], [ -71.06, 42.37 ], [ -71.06, 42.36 ]]] },
-      "pattern": "grid",
-      "altitude_m": 80
+      "area": "the harbor",
+      "target": "small boats",
+      "pattern": "parallel sweep"
     }
   }
 }
@@ -307,8 +312,13 @@ Verbs are exhaustive — anything else is rejected with `CommandAck { result: RE
 | `Detection` | `detection_id`, `class`, `confidence`, `bbox`, optional `geo`, optional `frame_ref` | Vision detection. Phase 2. |
 | `ReasoningTrace` | `command_id`, `decision`, `rationale` (≤500 chars), optional `tokens` | One LLM reasoning step. Phase 2. |
 | `FrameThumbnail` | `format` ("jpeg"), `width`, `height`, `b64` | Compressed frame sample. Capped at ~600 KB by the edge to stay under the 1 MB Foundry Listener limit. Phase 2. |
-| `CommandAck` | `command_id`, `result` (`ACCEPTED` \| `REJECTED` \| `EXPIRED`), optional `reason` | Acknowledges a received command. Drives the operator-visible `PENDING → ACKED` transition. |
+| `CommandAck` | `command_id`, `result` (`WILCO` \| `UNABLE` \| `ROGER` \| `STANDBY` \| `EXPIRED`), `reason` (required when `UNABLE`) | Drone brevity reply per [policy](../drone_command_policy.json). `WILCO`/`ROGER`/`STANDBY` map to `ACKED`; `UNABLE` maps to `REJECTED` in the operator-visible state. |
 | `MissionEvent` | `event_kind` (`STARTED` \| `COMPLETED` \| `ABORTED` \| `FALLBACK_HOLD`), `command_id` | Lifecycle marker. Drives `ACKED → COMPLETED/ABORTED`. |
+| `Sitrep` | `observed_at`, `location` ({lat, lon, mgrs?}), `scene` (VLM string), `link_state` (`CONNECTED`\|`DENIED`\|`RECOVERING`) | Periodic situation report from `REPORT` cadence. |
+| `Contact` | + `command_id`, `contacts[]` ({description, confidence}) | `SEARCH`/`TRACK`/`IDENTIFY` match above confidence threshold. |
+| `Observation` | + `command_id`, `delta` (what changed) | `OBSERVE` delta detection. |
+| `Bingo` | `resource` (e.g. "fuel"), optional `remaining_pct` | Monitored resource at minimum threshold. |
+| `Nodeloss` | — | Self-reported imminent loss of node. |
 
 **Status lifecycle (operator-visible, derived from `CommandAck` + `MissionEvent` events):**
 
@@ -317,7 +327,7 @@ PENDING ──► ACKED ──► COMPLETED
    │           │
    │           └────► ABORTED        (MissionEvent: ABORTED | FALLBACK_HOLD)
    ├──► EXPIRED                       (CommandAck: EXPIRED, or now > expires_at AND PENDING)
-   └──► REJECTED                      (CommandAck: REJECTED)
+   └──► REJECTED                      (CommandAck: UNABLE)
 ```
 
 `ACKED` is the answer to "did the operator see the command was received?"
@@ -332,32 +342,40 @@ Two modes: against the local stub for dev, or against real Foundry once the UI w
 
 The stub at [tools/foundry_stub.py](../tools/foundry_stub.py) exposes an admin endpoint that builds a valid command envelope from a loose payload and queues it for the next poll.
 
-**Inject HOLD (smallest possible command):**
+**Inject ABORT (smallest possible command):**
 
 ```bash
 curl -X POST http://127.0.0.1:8080/admin/inject_command \
   -H 'Content-Type: application/json' \
-  -d '{"drone_id":"uav-01","verb":"HOLD"}'
+  -d '{"drone_id":"uav-01","verb":"ABORT"}'
 ```
 
-Response: `{"ok": true, "message_id": "<uuid>"}`. The edge picks it up within `COMMAND_POLL_INTERVAL_S` (default 2 s) and ACKs immediately.
+Response: `{"ok": true, "message_id": "<uuid>"}`. The edge picks it up within `COMMAND_POLL_INTERVAL_S` (default 2 s) and ACKs (`WILCO`) immediately.
 
-**Inject SCAN with full params:**
+**Inject SEARCH with full params:**
 
 ```bash
 curl -X POST http://127.0.0.1:8080/admin/inject_command \
   -H 'Content-Type: application/json' \
   -d '{
     "drone_id": "uav-01",
-    "verb": "SCAN",
+    "verb": "SEARCH",
     "priority": "PRIORITY",
     "params": {
-      "area": {"type": "Polygon", "coordinates": [[[-71.06, 42.36], [-71.05, 42.36], [-71.05, 42.37], [-71.06, 42.37], [-71.06, 42.36]]]},
-      "pattern": "grid",
-      "altitude_m": 80
+      "area": "the harbor",
+      "target": "small boats",
+      "pattern": "parallel sweep"
     },
     "expires_in_s": 1800
   }'
+```
+
+**Inject REPORT (read-only — drone replies `ROGER`):**
+
+```bash
+curl -X POST http://127.0.0.1:8080/admin/inject_command \
+  -H 'Content-Type: application/json' \
+  -d '{"drone_id":"uav-01","verb":"REPORT","params":{"subject":"current scene"}}'
 ```
 
 **Inject ASSIGN_MISSION (delivers an LLM system-prompt fragment to the drone):**
@@ -414,7 +432,7 @@ curl -X POST \
       \"message_id\": \"$MID\",
       \"device_id\": \"uav-01\",
       \"mission_id\": \"none\",
-      \"verb\": \"HOLD\",
+      \"verb\": \"REPORT\",
       \"params_json\": \"{}\",
       \"priority\": \"PRIORITY\",
       \"status\": \"PENDING\",
@@ -455,8 +473,8 @@ Response shape:
 {
   "data": [
     {
-      "__primaryKey": "...", "__rid": "...", "__apiName": "command", "__title": "HOLD",
-      "messageId": "441CBAEA-...", "deviceId": "uav-01", "verb": "HOLD",
+      "__primaryKey": "...", "__rid": "...", "__apiName": "command", "__title": "REPORT",
+      "messageId": "441CBAEA-...", "deviceId": "uav-01", "verb": "REPORT",
       "paramsJson": "{}", "priority": "PRIORITY", "status": "PENDING",
       "issuedAt": "2026-05-02T22:18:50Z", "expiresAt": "2026-05-02T23:18:50Z",
       "missionId": "none", "ackedAt": "none", "completedAt": "none", "supersedes": "none"
@@ -480,7 +498,7 @@ The poll loop lives in [edge/src/victus_edge/main.py](../edge/src/victus_edge/ma
 2. Server returns `{data: [{...command object...}, ...], totalCount: "..."}`.
 3. Each ontology object is converted to a wire `Envelope` via `_object_to_envelope()` — translating camelCase API names (`messageId`, `deviceId`, `paramsJson`) back to snake_case envelope fields. The result is validated through `protocol.validate()` (raises `ProtocolError` on schema/version mismatch — invalid envelopes are dropped + logged, not ACKed).
 4. Local dedup: the `_seen_command_ids` set drops any `messageId` already processed (so the same PENDING row isn't re-emitted on every poll).
-5. Edge logs the command and immediately ACKs with `result=ACCEPTED` via `client.ack_command(message_id, "ACCEPTED")` — which goes back through the Streams V2 publishRecords path as a `CommandAck` event.
+5. Edge logs the command and immediately ACKs with `result=WILCO` via `client.ack_command(message_id, "WILCO")` — which goes back through the Streams V2 publishRecords path as a `CommandAck` event. For read-only verbs (e.g. `REPORT`), edge replies `ROGER` instead.
 
 ### 8.2 Handler hook (Phase 1.0 placeholder)
 
@@ -493,15 +511,17 @@ async def _command_poller(client: FoundryClient, cfg: Config) -> None:
         envelopes = await client.poll_commands(cursor)
         for env in envelopes:
             log.info("command_received", message_id=env.message_id, verb=env.payload.get("verb"), params=env.payload.get("params"))
-            await client.ack_command(env.message_id, result="ACCEPTED")
+            await client.ack_command(env.message_id, result="WILCO")
             cursor = env.message_id
 
             # ── plug your handler in here ──────────────────────────
             # e.g. push to a queue consumed by the reasoner, or:
             #   match env.payload["verb"]:
-            #     case "HOLD":            await autonomy.safe_fallback()
+            #     case "ABORT":           await autonomy.safe_fallback()
+            #     case "RTB":             await autonomy.execute({"do": "rtb"})
+            #     case "GOTO":            await autonomy.execute({"do": "goto", **env.payload["params"]})
             #     case "ASSIGN_MISSION":  reasoner.set_prompt(env.payload["params"]["system_prompt"])
-            #     case "SCAN":            await autonomy.execute({"do": "scan", **env.payload["params"]})
+            #     case "SEARCH":          await autonomy.execute({"do": "search", **env.payload["params"]})
             #     ...
             # ───────────────────────────────────────────────────────
         await asyncio.sleep(cfg.command_poll_interval_s)
@@ -511,11 +531,13 @@ The reasoner and autonomy modules are stubs (`NotImplementedError`) until Phase 
 
 ### 8.3 ACK semantics
 
-- **`ACCEPTED`** — edge has the command, it's well-formed, and the drone is in a state to act on it.
-- **`REJECTED`** — edge refuses (unknown verb, invalid params for verb, conflicting ROE). Include a `reason` string. The operator sees the command flip to `REJECTED`.
+- **`WILCO`** — acknowledged, will comply. Edge has the command, it's well-formed, and the drone is in a state to act on it.
+- **`UNABLE`** — cannot comply (unknown verb per policy → `"command unclear, say again"`, invalid params, conflicting ROE). `reason` field required. Operator sees `REJECTED`.
+- **`ROGER`** — received and understood. Used for read-only requests like `REPORT` where there's nothing to "comply" with.
+- **`STANDBY`** — processing or temporarily unavailable; wait. Operator sees command stay `ACKED` (no terminal state yet).
 - **`EXPIRED`** — edge picked it up after `expires_at` had passed. Send this only if the edge is doing the expiry check itself; the orchestrator-side scheduled transform will also catch unACKed expired commands.
 
-Emit ACK via `client.ack_command(message_id, "ACCEPTED")` — convenience method that wraps `encode_telemetry(event="CommandAck", fields={...})` + `post_telemetry`.
+Emit ACK via `client.ack_command(message_id, "WILCO")` — convenience method that wraps `encode_telemetry(event="CommandAck", fields={...})` + `post_telemetry`.
 
 ---
 
@@ -595,7 +617,7 @@ encode_telemetry("drone-uav-01", "FrameThumbnail", {
 
 **CommandAck** (use the convenience method instead):
 ```python
-await client.ack_command("5b8c9f2e-...", result="ACCEPTED")
+await client.ack_command("5b8c9f2e-...", result="WILCO")
 ```
 
 **MissionEvent** (lifecycle marker):
@@ -617,7 +639,7 @@ curl -X POST \
   "$FOUNDRY_STACK_URL/api/v2/highScale/streams/datasets/$FOUNDRY_TELEMETRY_DATASET_RID/streams/master/publishRecords" \
   -d '{
     "records": [{
-      "protocol_version": "0.2.0",
+      "protocol_version": "0.3.0",
       "message_id": "11111111-2222-3333-4444-555555555555",
       "issued_at": "2026-05-02T18:00:00Z",
       "sender": "drone-uav-01",
@@ -644,7 +666,7 @@ ssh jetson 'tail -f /tmp/edge.log'
 tail -f /tmp/stub.log
 ```
 
-The edge uses [structlog](https://www.structlog.org) — every log line is structured key/value (e.g. `command_received message_id=... verb=HOLD params={}`).
+The edge uses [structlog](https://www.structlog.org) — every log line is structured key/value (e.g. `command_received message_id=... verb=REPORT params={"subject":"current scene"}`).
 
 ### 10.2 Stop / restart the edge
 
@@ -745,7 +767,7 @@ Won't help reach the orchestrator if the orchestrator is on a guest/event networ
 ### 12.3 Versioning rules
 
 - **Major bump** (`0.x → 1.x` or `1.x → 2.x`): breaking change. Required field added / typed differently / removed. Both sides MUST be at the same major. Edge rejects mismatched-major messages.
-- **Minor bump** (`0.2.0 → 0.3.0`): additive. New verb, new event type, new optional field. Old code treats unknown verbs as `REJECTED` but doesn't crash.
+- **Minor bump** (e.g. `0.3.0 → 0.4.0`): additive. New verb, new event type, new optional field. Old code treats unknown verbs as `UNABLE` but doesn't crash.
 - **Patch bump**: documentation / wording only. No on-the-wire change.
 
 ---
@@ -776,7 +798,7 @@ ssh -n jetson 'cd ~/victus/edge && source .venv/bin/activate && set -a && source
 ```bash
 curl -X POST http://127.0.0.1:8080/admin/inject_command \
   -H 'Content-Type: application/json' \
-  -d '{"drone_id":"uav-01","verb":"HOLD"}'
+  -d '{"drone_id":"uav-01","verb":"REPORT","params":{"subject":"current scene"}}'
 ```
 
 **Issue a command against real Foundry (operator):**
@@ -785,7 +807,7 @@ TOKEN=...; ONTOLOGY=ontology-abe5026d-72be-438c-980f-344a88cff4dc
 MID=$(uuidgen); NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ"); EXP=$(date -u -v+1H +"%Y-%m-%dT%H:%M:%SZ")
 curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   "https://victus.usw-23.palantirfoundry.com/api/v2/ontologies/$ONTOLOGY/actions/issue-command/apply" \
-  -d "{\"parameters\":{\"message_id\":\"$MID\",\"device_id\":\"uav-01\",\"mission_id\":\"none\",\"verb\":\"HOLD\",\"params_json\":\"{}\",\"priority\":\"PRIORITY\",\"status\":\"PENDING\",\"issued_at\":\"$NOW\",\"expires_at\":\"$EXP\",\"acked_at\":\"none\",\"completed_at\":\"none\",\"supersedes\":\"none\"}}"
+  -d "{\"parameters\":{\"message_id\":\"$MID\",\"device_id\":\"uav-01\",\"mission_id\":\"none\",\"verb\":\"REPORT\",\"params_json\":\"{\\\"subject\\\":\\\"current scene\\\"}\",\"priority\":\"ROUTINE\",\"status\":\"PENDING\",\"issued_at\":\"$NOW\",\"expires_at\":\"$EXP\",\"acked_at\":\"none\",\"completed_at\":\"none\",\"supersedes\":\"none\"}}"
 ```
 
 **Tail edge logs:**

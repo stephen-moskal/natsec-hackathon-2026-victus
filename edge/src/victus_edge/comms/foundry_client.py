@@ -103,7 +103,7 @@ class FoundryClient:
         except json.JSONDecodeError:
             params = {}
         env_dict = {
-            "protocol_version": "0.2.0",
+            "protocol_version": "0.3.0",
             "message_id": obj.get("messageId") or obj["message_id"],
             "issued_at": obj.get("issuedAt") or obj.get("issued_at") or "",
             "sender": "foundry-orchestrator",

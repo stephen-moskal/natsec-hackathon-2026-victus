@@ -15,7 +15,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 
-PROTOCOL_VERSION = "0.2.0"
+PROTOCOL_VERSION = "0.3.0"
 PROTOCOL_MAJOR = "0"
 
 

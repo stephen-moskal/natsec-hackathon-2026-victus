@@ -3,7 +3,7 @@
 Phase 1.0 wiring: two concurrent asyncio tasks share a single FoundryClient.
 
   - command_poller: every COMMAND_POLL_INTERVAL_S, calls pollCommands, logs
-    each new command, immediately ACKs with result=ACCEPTED. The reasoner is
+    each new command, immediately ACKs with result=WILCO. The reasoner is
     not yet wired in — Phase 2 plugs into the same dispatch point.
   - telemetry_emitter: every POSITION_EMIT_INTERVAL_S, emits a Position
     heartbeat with mocked coordinates. Real GPS lands in Phase 2.
@@ -58,7 +58,7 @@ async def _command_poller(client: FoundryClient, cfg: Config) -> None:
                 verb=env.payload.get("verb"),
                 params=env.payload.get("params"),
             )
-            await client.ack_command(env.message_id, result="ACCEPTED")
+            await client.ack_command(env.message_id, result="WILCO")
             cursor = env.message_id
         await asyncio.sleep(cfg.command_poll_interval_s)
 
