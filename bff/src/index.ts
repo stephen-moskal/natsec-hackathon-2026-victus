@@ -83,7 +83,10 @@ app.get("/api/drones", async (_req: Request, res: Response) => {
     return;
   }
   try {
-    const objs = await searchObjects(FOUNDRY, "drone", { pageSize: 100 });
+    const objs = await searchObjects(FOUNDRY, "drone", {
+      orderBy: { fields: [{ field: "droneId", direction: "asc" }] },
+      pageSize: 100,
+    });
     const drones: Drone[] = objs.map(droneFromFoundry);
     res.json(drones);
   } catch (e) {
