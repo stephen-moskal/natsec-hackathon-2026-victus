@@ -42,7 +42,7 @@ FRAME_WIDTH = 640
 FRAME_HEIGHT = 360
 
 
-class _FrameStore:
+class FrameStore:
     """Thread-safe (asyncio-safe) shared latest-frame buffer."""
     def __init__(self) -> None:
         self._jpeg: Optional[bytes] = None
@@ -60,7 +60,7 @@ class _FrameStore:
         return self._jpeg  # type: ignore[return-value]
 
 
-async def _capture_loop(store: _FrameStore, cfg) -> None:
+async def _capture_loop(store: FrameStore, cfg) -> None:
     """Continuously read frames from the webcam into the shared store."""
     if not _CV2_AVAILABLE:
         log.error("frame_capture_disabled", reason="cv2 not installed")
@@ -91,7 +91,7 @@ async def _capture_loop(store: _FrameStore, cfg) -> None:
         log.info("webcam_closed")
 
 
-async def _http_server(store: _FrameStore) -> None:
+async def _http_server(store: FrameStore) -> None:
     """Serve the latest frame over plain HTTP on port 8888."""
 
     async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -128,7 +128,7 @@ async def _http_server(store: _FrameStore) -> None:
         await server.serve_forever()
 
 
-async def _foundry_publisher(store: _FrameStore, client, cfg) -> None:
+async def _foundry_publisher(store: FrameStore, client, cfg) -> None:
     """Publish FrameThumbnail events to Foundry raw_telemetry periodically."""
     from ..comms.protocol import encode_telemetry
 
@@ -155,9 +155,15 @@ async def _foundry_publisher(store: _FrameStore, client, cfg) -> None:
             log.warning("frame_publish_failed", error=str(exc))
 
 
-async def run_frame_server(client, cfg) -> None:
-    """Start all frame server tasks. Call as asyncio.create_task(run_frame_server(...))."""
-    store = _FrameStore()
+async def run_frame_server(client, cfg, store: FrameStore | None = None) -> None:
+    """Start all frame server tasks. Call as asyncio.create_task(run_frame_server(...)).
+
+    `store` may be passed in by the caller so other components (e.g. the
+    Reasoner for verb-specific vision dispatch) can read the latest frame
+    from the same shared buffer. If omitted, a private store is created.
+    """
+    if store is None:
+        store = FrameStore()
     await asyncio.gather(
         _capture_loop(store, cfg),
         _http_server(store),

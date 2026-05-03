@@ -49,11 +49,12 @@ from .comms.foundry_client import FoundryClient
 from .comms.protocol import encode_telemetry
 from .config import Config, load
 from .llm.http_client import LlamaCppClient
+from .llm.mission_state import MissionState
 from .llm.reasoner import Reasoner, ReasoningInput
 from .llm.reasoning_server import ReasoningStore, run_reasoning_server
 from .llm.server import LlamaServer
 from .runtime.factory import build_foundry_client, build_vision
-from .vision.frame_server import run_frame_server
+from .vision.frame_server import FrameStore, run_frame_server
 from .vision.pipeline import GstSource, WebcamSource
 
 
@@ -202,6 +203,7 @@ async def _command_poller(
     cfg: Config,
     reasoner: Reasoner | None = None,
     reasoning_store: ReasoningStore | None = None,
+    mission_state: MissionState | None = None,
 ) -> None:
     cursor: str | None = None
     while True:
@@ -220,6 +222,12 @@ async def _command_poller(
             # any (potentially multi-second) LLM inference.
             await client.ack_command(env.message_id, result=_ack_result_for(verb))
             cursor = env.message_id
+
+            # Update mission state BEFORE the reasoner runs so ASSIGN_MISSION
+            # commands have their own mission in scope, and subsequent verbs
+            # see the most recent mission as context.
+            if mission_state is not None:
+                mission_state.update_from_command(env)
 
             # Run the reasoner inline if configured. Failures are logged but
             # don't crash the poller — next command still gets a chance.
@@ -355,6 +363,11 @@ async def _run_production_mode(cfg: Config) -> None:
     foundry = build_foundry_client(cfg)
     assert foundry is not None, "production mode requires a Foundry client"
 
+    # Shared state across the running tasks — built up-front so the
+    # Reasoner, frame server, and command poller all see the same instances.
+    frame_store = FrameStore()
+    mission_state = MissionState()
+
     # Reasoner is wired only when the LLM backend is non-mock. Caller controls
     # this via VICTUS_LLM_BACKEND=llama_cpp_server (typical) or "mock".
     async def _run_with_server() -> None:
@@ -365,20 +378,29 @@ async def _run_production_mode(cfg: Config) -> None:
         if cfg.llm_backend == "llama_cpp_server":
             llm_client_ctx = LlamaCppClient(cfg.llm_server_url, timeout_s=60.0)
             await llm_client_ctx.__aenter__()
-            reasoner = Reasoner(backend=cfg.llm_backend, client=llm_client_ctx)
+            reasoner = Reasoner(
+                backend=cfg.llm_backend,
+                client=llm_client_ctx,
+                frame_store=frame_store,
+                mission_state=mission_state,
+            )
             reasoning_store = ReasoningStore()
             log.info("reasoner_wired", backend=cfg.llm_backend, url=cfg.llm_server_url)
         elif cfg.llm_backend == "mock":
-            reasoner = Reasoner(backend="mock")
+            reasoner = Reasoner(
+                backend="mock",
+                frame_store=frame_store,
+                mission_state=mission_state,
+            )
             reasoning_store = ReasoningStore()
             log.info("reasoner_wired", backend="mock")
 
         try:
             async with foundry as client:
                 tasks = [
-                    _command_poller(client, cfg, reasoner, reasoning_store),
+                    _command_poller(client, cfg, reasoner, reasoning_store, mission_state),
                     _telemetry_emitter(client, cfg),
-                    run_frame_server(client, cfg),
+                    run_frame_server(client, cfg, frame_store),
                 ]
                 if reasoning_store is not None:
                     tasks.append(run_reasoning_server(reasoning_store))
