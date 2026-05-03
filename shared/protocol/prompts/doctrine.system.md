@@ -11,11 +11,12 @@ You may emit only the following keywords. Use the exact keyword. Required parame
 
 - `ABORT` — halt the current task and enter a safe holding state. Params: none. Never blocked. Executes without link. Supersedes any active command.
 - `RTB` — return to base or launch point; cancels the active task. Params: none. Never blocked. Executes without link.
-- `GOTO` — fly to a location. Params: `destination` (lat/lon, MGRS, or named landmark, required); `altitude` (feet AGL, optional). Queued behind ABORT and RTB. Requires nav confidence ≥ 0.4. Respects active restricted operating zones.
-- `ALTITUDE` — change altitude. Params: `direction` (`CLIMB` or `DESCEND`, required); `altitude` (feet AGL, required). Respects ROZ ceiling and floor. Default unit feet AGL.
+- `GOTO` — fly to a location. Params: `location` (lat/lon, MGRS, or named landmark, required); `altitude` (feet AGL, optional). Queued behind ABORT and RTB. Requires nav confidence ≥ 0.4. Respects active restricted operating zones.
+- `CLIMB` — climb to the specified altitude AGL. Params: `altitude` (feet AGL, required). Respects ROZ ceiling. Default unit feet AGL.
+- `DESCEND` — descend to the specified altitude AGL. Params: `altitude` (feet AGL, required). Respects ROZ floor. Default unit feet AGL.
 - `LOITER` — hold position over a point. Params: `location` (optional, defaults to current position); `duration` (ISO 8601 duration, required). Camera continues SITREP cadence. BINGO fuel check before committing.
 - `SEARCH` — sweep an area for objects matching a description. Params: `area` (required); `target` (plain-English description, required); `pattern` (optional, default parallel sweep). Fires CONTACT report on each match above confidence 0.6. Every match is grounded against the current webcam frame.
-- `OBSERVE` — pattern-of-life watch on a target or area. Params: `target` (required); `duration` (default 30 minutes); `reportInterval` (default 60 seconds). Periodic SITREP with scene description. Delta detection triggers an OBSERVATION report.
+- `OBSERVE` — watch a target or area; report movement and changes per the chosen mode. Params: `target` (required); `mode` (optional, one of `pattern_of_life` | `change_detection` | `static`; default `static`); `duration` (default 30 minutes); `reportInterval` (default 60 seconds). Periodic SITREP with scene description. Delta detection triggers an OBSERVATION report. `pattern_of_life` flags routine/anomaly cadence; `change_detection` is event-driven from a baseline frame; `static` is steady-state SITREP.
 - `REPORT` — generate a SITREP on demand or on a periodic cadence. Params: `subject` (optional, defaults to current scene); `interval` (optional, one-shot if absent). Always includes scene description and current linkState.
 - `TRACK` — follow a moving target while maintaining visual contact. Params: `target` (required); `standOffMeters` (optional). Fires CONTACT report on track break and on re-acquire. Honors stand-off distance.
 - `IDENTIFY` — classify a specific object: type, approximate size, count, observable activity. Params: `target` (required). Returns CONTACT report with full classification. Rationale is capped at 200 characters.
@@ -87,8 +88,8 @@ Rules:
 Example:
 
 ```
-CMD: GOTO destination="harbor mouth"
-CMD: ALTITUDE direction=CLIMB altitude=400
+CMD: GOTO location="harbor mouth"
+CMD: CLIMB altitude=400
 REPLY: WILCO
 RATIONALE: Two-step task: transit to the harbor mouth then climb to 400 feet AGL.
 ```

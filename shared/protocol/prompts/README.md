@@ -40,9 +40,34 @@ That text is layered into the doctrine **between standing rules and the output c
 
 ## Vocabulary scope (and what is NOT here)
 
-Doctrine teaches the **policy vocabulary** only — the 10 keywords from `drone_command_policy.json`'s `commands[]` (ABORT, RTB, GOTO, ALTITUDE, LOITER, SEARCH, OBSERVE, REPORT, TRACK, IDENTIFY) and the 7 brevity-reply keywords. It does **not** teach the wire-schema verbs (SCAN, INVESTIGATE, FOLLOW, HOLD, ASSIGN_MISSION) defined in [`../schemas/command.schema.json`](../schemas/command.schema.json). The wire-schema verbs are Foundry-side concerns — what the orchestrator hands to the edge as tasking. The translation between the operator's policy keywords and the wire-schema verbs happens in a future runtime layer (see "Future work" below).
+Doctrine teaches the **policy vocabulary** only — the 11 keywords from `drone_command_policy.json`'s `commands[]` (ABORT, RTB, GOTO, CLIMB, DESCEND, LOITER, SEARCH, OBSERVE, REPORT, TRACK, IDENTIFY) and the 7 brevity-reply keywords. It does **not** teach the wire-schema verbs (SCAN, INVESTIGATE, FOLLOW, HOLD, ASSIGN_MISSION) defined in [`../schemas/command.schema.json`](../schemas/command.schema.json). The wire-schema verbs are Foundry-side concerns — what the orchestrator hands to the edge as tasking. The translation between the operator's policy keywords and the wire-schema verbs happens in a future runtime layer (see "Future work" below).
 
 The doctrine also does **not** cover the `report` context — the periodic SITREP / CONTACT / OBSERVATION emission while a task (OBSERVE, SEARCH, TRACK) is running. That emitter has a different output schema (`drone_command_policy.json` `reportSchema`) and will get its own sibling prompt file (`report.system.md`) declared as `contexts.report` in the manifest.
+
+## Vocabulary changes — policy v0.1.0 → v0.2.0
+
+Three vocabulary changes landed when `drone_command_adherence_v1_1.json` was authored. The eval set is the most recently considered artifact and reflects better thinking for a small (2B-class) VLM, so doctrine and policy were updated to match. Each change has both a scoring impact (what the harness now considers a passing emission) and an operations impact (how the runtime translates the emission into action on the drone).
+
+### 1. GOTO parameter rename: `destination` → `location`
+
+- **Now passing**: `CMD: GOTO location="harbor mouth"`. `destination=` is no longer accepted.
+- **Why**: makes GOTO consistent with LOITER, which already used `location`. One canonical key per concept means the autonomy layer needs only one resolver, not an alias table.
+- **Drone-side effect**: the navigation handler keys on `params["location"]` to feed the path planner. Old emissions with `destination` resolve to no target and the runtime synthesizes `REPLY: UNABLE reason="missing location"` per the malformed-output rule.
+
+### 2. ALTITUDE keyword split: ALTITUDE+direction → CLIMB / DESCEND
+
+- **Now passing**: `CMD: CLIMB altitude=400` or `CMD: DESCEND altitude=200`. `ALTITUDE direction=CLIMB altitude=400` is no longer accepted.
+- **Why**: a 2B VLM is more reliable filling 1 parameter than 2; CLIMB/DESCEND maps 1:1 to English so few-shot examples do less work; vocabulary count goes 10 → 11 but each verb is simpler.
+- **Drone-side effect**: two distinct handler functions in the autonomy layer instead of one branching on `direction`. CLIMB carries the ROZ-ceiling pre-flight check, DESCEND carries the ROZ-floor check. Eliminates the chance that a CLIMB request takes the descend code path during parser handoff.
+
+### 3. OBSERVE adds `mode` parameter
+
+- **Now passing**: `CMD: OBSERVE target="the pier" mode=pattern_of_life`. `mode` is optional but recommended on tasking that names a mode; default is `static` if omitted.
+- **Recognized values**: `pattern_of_life` (delta-detection cadence, event-on-change), `change_detection` (event-driven from a baseline frame), `static` (steady-state SITREP).
+- **Why**: operator tasking like "Observe the pier, pattern of life" carries a behavioral lever. Without `mode`, the lever was lost — buried in the rationale or defaulted by the runtime.
+- **Drone-side effect**: the reasoning layer picks a different per-frame VLM prompt depending on mode (e.g. "describe what's CHANGED since the last frame" for pattern_of_life). Telemetry cadence and CONTACT-trigger thresholds also vary per mode.
+
+These changes propagate to: `drone_command_policy.json` `commands[]` and `examples[]`, `doctrine.system.md` §3 and §8, `examples.jsonl` example #1, and `manifest.yaml` `policy_version` (bumped to `0.2.0` along with the doctrine checksum).
 
 ## Channel: text in, text out (not audio)
 

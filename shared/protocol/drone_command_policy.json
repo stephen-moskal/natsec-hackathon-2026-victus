@@ -1,6 +1,6 @@
 {
   "meta": {
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Command policy for a webcam-equipped virtual drone running on a Jetson edge runtime; defines the plain-English vocabulary, structured output, and brevity speech contract.",
     "target": "Jetson edge runtime, webcam-equipped virtual drone",
     "inputFormat": "plain English natural language",
@@ -27,7 +27,7 @@
       "priority": 3,
       "keyword": "GOTO",
       "parameters": [
-        {"name": "destination", "type": "location", "required": true, "description": "Target waypoint as lat/lon, MGRS, or named landmark"},
+        {"name": "location", "type": "location", "required": true, "description": "Target waypoint as lat/lon, MGRS, or named landmark"},
         {"name": "altitude", "type": "altitude", "required": false, "description": "Optional cruise altitude in feet AGL; defaults to current altitude"}
       ],
       "description": "Fly to the specified location.",
@@ -36,14 +36,23 @@
     },
     {
       "priority": 4,
-      "keyword": "ALTITUDE",
+      "keyword": "CLIMB",
       "parameters": [
-        {"name": "direction", "type": "string", "required": true, "description": "CLIMB or DESCEND"},
         {"name": "altitude", "type": "altitude", "required": true, "description": "Target altitude in feet AGL"}
       ],
-      "description": "Change altitude in the specified direction to the given AGL value; covers both CLIMB and DESCEND.",
-      "naturalLanguageExamples": ["Climb to 400 feet.", "Descend to 200 AGL.", "Get up to angels four."],
-      "executionRules": ["respects ceiling and floor of active ROZ", "default unit feet AGL"]
+      "description": "Climb to the specified altitude AGL.",
+      "naturalLanguageExamples": ["Climb to 400 feet.", "Get up to angels four.", "Take it up to 500."],
+      "executionRules": ["respects ceiling of active ROZ", "default unit feet AGL"]
+    },
+    {
+      "priority": 4,
+      "keyword": "DESCEND",
+      "parameters": [
+        {"name": "altitude", "type": "altitude", "required": true, "description": "Target altitude in feet AGL"}
+      ],
+      "description": "Descend to the specified altitude AGL.",
+      "naturalLanguageExamples": ["Descend to 200 AGL.", "Drop down to 150.", "Come down to 300 feet."],
+      "executionRules": ["respects floor of active ROZ", "default unit feet AGL"]
     },
     {
       "priority": 5,
@@ -73,12 +82,13 @@
       "keyword": "OBSERVE",
       "parameters": [
         {"name": "target", "type": "string", "required": true, "description": "Target or area description"},
+        {"name": "mode", "type": "string", "required": false, "description": "Observation mode shaping cadence and event thresholds. Recommended values: pattern_of_life (delta-detection cadence, event-on-change), change_detection (event-driven from baseline), static (steady-state SITREP). Default: static."},
         {"name": "duration", "type": "duration", "required": false, "description": "Observation duration; default 30 minutes"},
         {"name": "reportInterval", "type": "duration", "required": false, "description": "SITREP cadence; default 60 seconds"}
       ],
-      "description": "Pattern-of-life watch on a target or area; report movement and changes.",
+      "description": "Watch a target or area; report movement and changes per the chosen mode.",
       "naturalLanguageExamples": ["Watch that pier for 10 minutes.", "Observe the warehouse, tell me when something changes.", "Pattern of life on the dock."],
-      "executionRules": ["periodic SITREP with scene description", "delta detection triggers OBSERVATION report"]
+      "executionRules": ["periodic SITREP with scene description", "delta detection triggers OBSERVATION report", "mode selects between pattern_of_life, change_detection, static"]
     },
     {
       "priority": 8,
@@ -169,8 +179,8 @@
       "operatorInput": "Go to the harbor mouth and climb to 400 feet.",
       "parsedCommand": {
         "commands": [
-          {"keyword": "GOTO", "parameters": {"destination": "harbor mouth"}},
-          {"keyword": "ALTITUDE", "parameters": {"direction": "CLIMB", "altitude": 400}}
+          {"keyword": "GOTO", "parameters": {"location": "harbor mouth"}},
+          {"keyword": "CLIMB", "parameters": {"altitude": 400}}
         ]
       },
       "droneResponse": {"keyword": "WILCO"}

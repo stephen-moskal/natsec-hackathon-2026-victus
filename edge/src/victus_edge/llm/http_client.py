@@ -42,45 +42,37 @@ class LlamaCppClient:
         except httpx.HTTPError:
             return False
 
-    async def describe_frame(
+    async def chat_completion(
         self,
-        jpeg_bytes: bytes,
-        prompt: str,
-        max_tokens: int = 80,
-        temperature: float = 0.2,
+        messages: list[dict[str, Any]],
+        max_tokens: int = 512,
+        temperature: float = 0.1,
+        stop: list[str] | None = None,
     ) -> str:
-        """Send one image + prompt to llama-server; return the assistant text.
+        """POST OpenAI-style messages to /v1/chat/completions; return assistant text.
+
+        Generic shape — pass any list of `{role, content}` dicts. `content` may
+        be a plain string or a list of content parts (for multimodal). The
+        caller is responsible for building the message list (including system
+        prompt and few-shot turns).
 
         Raises httpx.HTTPError on transport/HTTP failure, ValueError on
         unexpected response shape.
 
-        Reasoning models (gemma4, deepseek-r1, qwen-qwq) emit their output
-        in `reasoning_content` until they hit the final-answer marker. For
-        a describe-what-you-see prompt the reasoning IS the description we
-        want, so we fall back to `reasoning_content` when `content` is
-        empty. max_tokens defaults to 512 to give the model headroom to
-        finish the CoT — at 256 it runs out mid-thought.
+        Reasoning models (gemma4, qwen3-vl) emit their output in
+        `reasoning_content` until they hit the final-answer marker. We fall
+        back to `reasoning_content` when `content` is empty.
         """
         assert self._client is not None, "use LlamaCppClient as async context manager"
 
-        b64 = base64.b64encode(jpeg_bytes).decode("ascii")
         payload: dict[str, Any] = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-                        },
-                    ],
-                }
-            ],
+            "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": False,
         }
+        if stop:
+            payload["stop"] = stop
 
         resp = await self._client.post(
             f"{self._base_url}/v1/chat/completions",
@@ -96,3 +88,32 @@ class LlamaCppClient:
             return content
         except (KeyError, IndexError, TypeError) as exc:
             raise ValueError(f"unexpected llama-server response shape: {body!r}") from exc
+
+    async def describe_frame(
+        self,
+        jpeg_bytes: bytes,
+        prompt: str,
+        max_tokens: int = 80,
+        temperature: float = 0.2,
+    ) -> str:
+        """Send one image + prompt to llama-server; return the assistant text.
+
+        Thin wrapper around chat_completion that builds the multimodal user
+        message containing a JPEG (base64 data URL) and a text prompt.
+        """
+        b64 = base64.b64encode(jpeg_bytes).decode("ascii")
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                    },
+                ],
+            }
+        ]
+        return await self.chat_completion(
+            messages, max_tokens=max_tokens, temperature=temperature
+        )
