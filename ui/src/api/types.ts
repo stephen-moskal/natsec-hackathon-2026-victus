@@ -2,7 +2,7 @@
  *  Foundry's camelCase property API names back to snake_case before sending.
  */
 
-export type LinkStatus = "green" | "yellow" | "red";
+export type LinkStatus = "green" | "red";
 
 export type Drone = {
   drone_id: string;

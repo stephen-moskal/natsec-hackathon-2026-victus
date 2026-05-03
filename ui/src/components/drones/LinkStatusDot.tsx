@@ -3,8 +3,7 @@ import { LINK_STATUS_CLASSES } from "../../lib/linkStatus";
 
 export default function LinkStatusDot({ status, withLabel = false }: { status: LinkStatus; withLabel?: boolean }) {
   const cls = LINK_STATUS_CLASSES[status];
-  const ringColor =
-    status === "green" ? "bg-green-500" : status === "yellow" ? "bg-yellow-400" : "bg-red-500";
+  const ringColor = status === "green" ? "bg-green-500" : "bg-red-500";
   return (
     <span className="inline-flex items-center gap-1.5">
       <span className="relative inline-flex h-2.5 w-2.5">

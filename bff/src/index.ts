@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import type {
   Drone,
   Command,
+  CommandAck,
   Mission,
   FoundryHealth,
   IssueCommandRequest,
@@ -19,7 +20,7 @@ import {
   pingFoundry,
   decodeTokenExpiry,
 } from "./foundry.js";
-import { droneFromFoundry, commandFromFoundry, missionFromFoundry } from "./camelcase.js";
+import { droneFromFoundry, commandFromFoundry, commandAckFromFoundry, missionFromFoundry } from "./camelcase.js";
 
 dotenv.config();
 
@@ -103,12 +104,49 @@ app.get("/api/commands", async (req: Request, res: Response) => {
     return;
   }
   try {
-    const objs = await searchObjects(FOUNDRY, "command", {
-      where: { type: "eq", field: "deviceId", value: deviceId },
-      orderBy: { fields: [{ field: "issuedAt", direction: "desc" }] },
-      pageSize: limit,
+    // Fetch commands and, in parallel, any CommandAck records for the same device.
+    // The command_ack object type may not yet be deployed (Phase 4b); if the
+    // search fails we fall back gracefully to raw PENDING status.
+    const [cmdObjs, ackObjs] = await Promise.all([
+      searchObjects(FOUNDRY, "command", {
+        where: { type: "eq", field: "deviceId", value: deviceId },
+        orderBy: { fields: [{ field: "issuedAt", direction: "desc" }] },
+        pageSize: limit,
+      }),
+      searchObjects(FOUNDRY, "commandAck", {
+        where: { type: "eq", field: "deviceId", value: deviceId },
+        pageSize: 200,
+      }).catch(() => [] as Record<string, unknown>[]),
+    ]);
+
+    // Build a lookup: command_id → CommandAck (most-recent result wins).
+    const ackMap = new Map<string, CommandAck>();
+    for (const obj of ackObjs) {
+      const ack = commandAckFromFoundry(obj);
+      if (ack.command_id && !ackMap.has(ack.command_id)) {
+        ackMap.set(ack.command_id, ack);
+      }
+    }
+
+    // Derive effective status from the ACK result.
+    const RESULT_TO_STATUS: Record<string, string> = {
+      WILCO:   "ACKED",
+      ROGER:   "ACKED",
+      STANDBY: "ACKED",
+      UNABLE:  "REJECTED",
+      EXPIRED: "EXPIRED",
+    };
+
+    const commands: Command[] = cmdObjs.map((obj) => {
+      const cmd = commandFromFoundry(obj);
+      const ack = ackMap.get(cmd.message_id);
+      if (ack) {
+        cmd.status   = RESULT_TO_STATUS[ack.result] ?? cmd.status;
+        cmd.acked_at = ack.acked_at;
+      }
+      return cmd;
     });
-    const commands: Command[] = objs.map(commandFromFoundry);
+
     res.json(commands);
   } catch (e) {
     console.error("[bff] /api/commands error:", e);

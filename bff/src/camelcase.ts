@@ -6,7 +6,7 @@
  * tables in foundry/README.md.
  */
 
-import type { Drone, Command, Mission } from "./types.js";
+import type { Drone, Command, CommandAck, Mission } from "./types.js";
 
 // ── drone ──────────────────────────────────────────────────────────────────
 
@@ -57,6 +57,24 @@ export function commandFromFoundry(obj: Record<string, unknown>): Command {
     out[snake] = obj[camel] ?? "";
   }
   return out as Command;
+}
+
+// ── command_ack (Phase 4b) ─────────────────────────────────────────────────
+
+const COMMAND_ACK_C2S: Record<string, keyof CommandAck> = {
+  commandId: "command_id",
+  deviceId:  "device_id",
+  result:    "result",
+  reason:    "reason",
+  ackedAt:   "acked_at",
+};
+
+export function commandAckFromFoundry(obj: Record<string, unknown>): CommandAck {
+  const out: Record<string, unknown> = {};
+  for (const [camel, snake] of Object.entries(COMMAND_ACK_C2S)) {
+    out[snake] = obj[camel] ?? "";
+  }
+  return out as CommandAck;
 }
 
 // ── mission (Phase 3) ──────────────────────────────────────────────────────

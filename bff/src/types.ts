@@ -71,6 +71,14 @@ export type AssignMissionResult = {
   error?: string;
 };
 
+export type CommandAck = {
+  command_id: string;
+  device_id: string;
+  result: string;   // WILCO | ROGER | STANDBY | UNABLE | EXPIRED
+  reason: string;
+  acked_at: string;
+};
+
 export type FoundryHealth = {
   reachable: boolean;
   token_valid_until_iso: string | null;
