@@ -45,6 +45,18 @@ class FoundryEndpoints:
     command_object_type: str     # API name of the command object type, e.g. "pzqmccug.command"
 
 
+@dataclass(frozen=True)
+class InvalidCommand:
+    """A command row in Foundry that couldn't be decoded into a valid envelope.
+
+    Surfaced from poll_commands so the caller can send a CommandAck { UNABLE }
+    once and stop reprocessing the row on every poll.
+    """
+
+    message_id: str
+    reason: str
+
+
 class FoundryClient:
     def __init__(
         self,
@@ -166,14 +178,21 @@ class FoundryClient:
             )
             # TODO Phase 1.1: append envelopes to JSONL buffer at self._buffer_path
 
-    async def poll_commands(self, since_message_id: str | None) -> list[Envelope]:
+    async def poll_commands(
+        self, since_message_id: str | None
+    ) -> tuple[list[Envelope], list["InvalidCommand"]]:
         """Search ontology for PENDING commands addressed to this drone.
 
-        Dedup is local: once an envelope with a given message_id has been returned
-        from this method, it will not be returned again, even if its status remains
-        PENDING (e.g. while the orchestrator-side transform that flips PENDING to
-        ACKED is not yet deployed). The ``since_message_id`` argument is accepted
-        for symmetry with the older interface but is not strictly required.
+        Returns a pair: (valid envelopes, invalid commands). Each invalid command
+        carries the message_id and a human-readable reason; the caller is expected
+        to send a ``CommandAck { result: UNABLE, reason: ... }`` for each so the
+        operator-visible status can flip to REJECTED.
+
+        Dedup is local: once a message_id has been seen — valid or invalid — it
+        will not be returned again from this method (even if Foundry's status
+        transform hasn't yet flipped it out of PENDING). The ``since_message_id``
+        argument is accepted for symmetry with the older interface but is not
+        strictly required.
         """
         assert self._client is not None, "use FoundryClient as async context manager"
         url = (
@@ -199,10 +218,11 @@ class FoundryClient:
             resp.raise_for_status()
         except httpx.HTTPError as exc:
             log.warning("poll_commands_failed", error=str(exc))
-            return []
+            return [], []
 
         data = resp.json().get("data", [])
         envelopes: list[Envelope] = []
+        invalid: list[InvalidCommand] = []
         for obj in data:
             mid = obj.get("messageId") or obj.get("message_id")
             if not mid or mid in self._seen_command_ids:
@@ -210,11 +230,17 @@ class FoundryClient:
             try:
                 env = self._object_to_envelope(obj)
             except (KeyError, ProtocolError) as exc:
-                log.error("invalid_command_dropped", error=str(exc), obj=obj)
+                # Per policy: "Unparseable commands return UNABLE with reason
+                # 'command unclear, say again'." We surface the schema reason to
+                # the caller so they can ACK once and stop reprocessing.
+                reason = str(exc) if isinstance(exc, ProtocolError) else f"missing field: {exc}"
+                log.error("invalid_command_will_ack_unable", error=reason, message_id=mid)
+                invalid.append(InvalidCommand(message_id=str(mid), reason=reason))
+                self._seen_command_ids.add(mid)
                 continue
             envelopes.append(env)
             self._seen_command_ids.add(mid)
-        return envelopes
+        return envelopes, invalid
 
     async def ack_command(
         self, command_id: str, result: str, reason: str | None = None
