@@ -48,6 +48,7 @@ class LlamaCppClient:
         max_tokens: int = 512,
         temperature: float = 0.1,
         stop: list[str] | None = None,
+        grammar: str | None = None,
     ) -> str:
         """POST OpenAI-style messages to /v1/chat/completions; return assistant text.
 
@@ -55,6 +56,11 @@ class LlamaCppClient:
         be a plain string or a list of content parts (for multimodal). The
         caller is responsible for building the message list (including system
         prompt and few-shot turns).
+
+        Pass `grammar` (GBNF source string) to constrain the sampler at decode
+        time — llama-server accepts this field as a llama.cpp extension to the
+        OpenAI-compat payload. Used to enforce the doctrine output contract
+        (see shared/protocol/grammars/doctrine.gbnf).
 
         Raises httpx.HTTPError on transport/HTTP failure, ValueError on
         unexpected response shape.
@@ -73,6 +79,8 @@ class LlamaCppClient:
         }
         if stop:
             payload["stop"] = stop
+        if grammar:
+            payload["grammar"] = grammar
 
         resp = await self._client.post(
             f"{self._base_url}/v1/chat/completions",
