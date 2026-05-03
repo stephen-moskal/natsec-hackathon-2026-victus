@@ -6,6 +6,7 @@ import LinkStatusDot from "./LinkStatusDot";
 import TelemetryPanel from "./TelemetryPanel";
 import CommandList from "./CommandList";
 import CurrentMissionPanel from "./CurrentMissionPanel";
+import LLMTracePanel from "./LLMTracePanel";
 import { api } from "../../api/client";
 import { linkStatusFrom } from "../../lib/linkStatus";
 import { timeAgo } from "../../lib/formatTime";
@@ -123,10 +124,10 @@ export default function DroneCard({ drone }: { drone: Drone }) {
         <CommandList commands={commands} error={commandsError} />
       </div>
 
-      {/* LLM trace placeholder */}
+      {/* LLM reasoning trace — live via Jetson HTTP, with in-memory cache fallback */}
       <div className="border-t border-gray-800 pt-2">
         <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">LLM Reasoning</div>
-        <div className="text-xs text-gray-600 italic">awaiting Phase 4 transform · last_reasoning</div>
+        <LLMTracePanel droneId={drone.drone_id} />
       </div>
 
       {/* footer */}

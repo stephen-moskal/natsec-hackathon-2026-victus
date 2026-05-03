@@ -75,6 +75,15 @@ export type AssignMissionResult = {
   error?: string;
 };
 
+export type LLMReasoning = {
+  command_id: string;
+  verb: string;
+  decision: string;
+  rationale: string;
+  tokens: number;
+  observed_at: string;
+};
+
 export type FoundryHealth = {
   reachable: boolean;
   token_valid_until_iso: string | null;

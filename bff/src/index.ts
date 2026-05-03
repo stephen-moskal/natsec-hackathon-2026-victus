@@ -78,6 +78,26 @@ app.get("/api/health", async (_req: Request, res: Response<FoundryHealth>) => {
   });
 });
 
+// Live link probe — if any drone has a directly reachable HTTP server on the
+// LAN (frame or reasoning port), overlay a fresh last_seen_at so the dashboard
+// reflects "is it actually reachable right now" rather than waiting for the
+// 5-15 min Foundry streaming flush + transform rebuild cycle.
+async function liveLinkProbe(deviceId: string): Promise<boolean> {
+  // Routing same as the frame proxy — DEVICE_HOSTS is the source of truth.
+  // We declare it below; this function reads it via closure once defined.
+  const host = DEVICE_HOSTS[deviceId];
+  if (!host) return false;
+  try {
+    const res = await undiciFetch(`http://${host}:${FRAME_SERVER_PORT}/frame`, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(800),
+    });
+    return res.status < 500; // 200 or 503-no-frame both mean "host is up"
+  } catch {
+    return false;
+  }
+}
+
 app.get("/api/drones", async (_req: Request, res: Response) => {
   if (MOCK_MODE) {
     res.json(mockDrones());
@@ -89,6 +109,21 @@ app.get("/api/drones", async (_req: Request, res: Response) => {
       pageSize: 100,
     });
     const drones: Drone[] = objs.map(droneFromFoundry);
+
+    // Overlay live link state for any drone we can reach directly. This makes
+    // the dashboard show ACTIVE within 1s of a Jetson coming online instead
+    // of waiting for the streaming dataset flush.
+    const nowIso = new Date().toISOString();
+    await Promise.all(
+      drones.map(async (d) => {
+        const alive = await liveLinkProbe(d.drone_id);
+        if (alive) {
+          d.last_seen_at = nowIso;
+          d.link_status = "ONLINE";
+        }
+      }),
+    );
+
     res.json(drones);
   } catch (e) {
     console.error("[bff] /api/drones error:", e);
@@ -431,9 +466,12 @@ const JETSON_HOST = (process.env.JETSON_HOST ?? "192.168.55.1").replace(/\/$/, "
 const FRAME_SERVER_PORT = Number(process.env.JETSON_FRAME_PORT ?? 8888);
 
 // Only devices listed here have a live frame server. Others return 404 immediately
-// so BRAVO/CHARLIE show "NO VIDEO" rather than serving the wrong camera.
+// so the UI shows "NO VIDEO" rather than serving the wrong camera.
+//
+// JETSON_HOST currently points to whichever Jetson is on the USB-C tether
+// (192.168.55.1). Today that's BRAVO (uav-02); ALPHA was unplugged.
 const DEVICE_HOSTS: Record<string, string> = {
-  "uav-01": JETSON_HOST,
+  "uav-02": JETSON_HOST,
 };
 
 // In-memory frame cache — last successfully fetched JPEG per device.
@@ -480,6 +518,71 @@ app.get("/api/frame/:deviceId", async (req: Request, res: Response) => {
   }
 
   res.status(503).send("No frame available");
+});
+
+// ── LLM Reasoning Trace endpoint ───────────────────────────────────────────
+//
+// GET /api/reasoning/:deviceId
+//
+// Proxies to the edge's reasoning HTTP server (port 8889). The edge serves
+// the most recent ReasoningTrace it produced; the BFF caches the last
+// successful response in memory so the UI keeps showing the previous
+// reasoning when the LAN connection blips. Same hybrid pattern as /api/frame.
+//
+// The same ReasoningTrace is also published to raw_telemetry for permanent
+// storage / historical analysis.
+//
+// REASONING_DEVICE_HOSTS env vars:
+//   - BRAVO_HOST          - IP/hostname of BRAVO Jetson on the LAN
+//   - JETSON_REASONING_PORT - default 8889
+
+const REASONING_PORT = Number(process.env.JETSON_REASONING_PORT ?? 8889);
+
+const REASONING_DEVICE_HOSTS: Record<string, string> = {};
+if (process.env.BRAVO_HOST) {
+  REASONING_DEVICE_HOSTS["uav-02"] = process.env.BRAVO_HOST.replace(/\/$/, "");
+}
+// Add other drones here as their LLMs come online (e.g. uav-01: JETSON_HOST).
+
+const reasoningCache = new Map<string, unknown>();
+
+app.get("/api/reasoning/:deviceId", async (req: Request, res: Response) => {
+  const deviceId = String(req.params.deviceId);
+  const host = REASONING_DEVICE_HOSTS[deviceId];
+
+  if (!host) {
+    res.status(404).json({ error: "no LLM configured for this device" });
+    return;
+  }
+
+  // Primary: live reasoning server on the Jetson.
+  try {
+    const upstream = await undiciFetch(
+      `http://${host}:${REASONING_PORT}/reasoning`,
+      { signal: AbortSignal.timeout(2000) },
+    );
+    if (upstream.ok) {
+      const json = await upstream.json();
+      reasoningCache.set(deviceId, json);
+      res.set("X-Source", "live");
+      res.set("Cache-Control", "no-store");
+      res.json(json);
+      return;
+    }
+  } catch {
+    // Edge unreachable — fall through to cache.
+  }
+
+  // Fallback: last successfully fetched reasoning this session (in-memory).
+  const cached = reasoningCache.get(deviceId);
+  if (cached) {
+    res.set("X-Source", "cached");
+    res.set("Cache-Control", "no-store");
+    res.json(cached);
+    return;
+  }
+
+  res.status(503).json({ error: "no reasoning available" });
 });
 
 app.listen(PORT, () => {

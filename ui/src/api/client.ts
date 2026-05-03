@@ -2,6 +2,7 @@ import type {
   Drone,
   Command,
   Mission,
+  LLMReasoning,
   FoundryHealth,
   IssueCommandRequest,
   IssueCommandResult,
@@ -40,4 +41,21 @@ export const api = {
     jpost<AssignMissionResult[]>("/api/assign-mission", req),
   issueCommand: (req: IssueCommandRequest) =>
     jpost<IssueCommandResult[]>("/api/issue-command", req),
+
+  /** Returns null when no LLM is configured for the device (404 from BFF). */
+  reasoning: async (
+    deviceId: string,
+    signal?: AbortSignal,
+  ): Promise<{ reasoning: LLMReasoning | null; source: "live" | "cached" | null }> => {
+    const res = await fetch(
+      `${BFF}/api/reasoning/${encodeURIComponent(deviceId)}`,
+      { signal },
+    );
+    if (res.status === 404) return { reasoning: null, source: null };
+    if (!res.ok) throw new Error(`GET /api/reasoning -> ${res.status}`);
+    const reasoning = (await res.json()) as LLMReasoning;
+    const src = res.headers.get("X-Source");
+    const source = src === "live" || src === "cached" ? src : null;
+    return { reasoning, source };
+  },
 };

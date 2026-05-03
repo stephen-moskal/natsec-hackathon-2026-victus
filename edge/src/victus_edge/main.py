@@ -49,6 +49,8 @@ from .comms.foundry_client import FoundryClient
 from .comms.protocol import encode_telemetry
 from .config import Config, load
 from .llm.http_client import LlamaCppClient
+from .llm.reasoner import Reasoner, ReasoningInput
+from .llm.reasoning_server import ReasoningStore, run_reasoning_server
 from .llm.server import LlamaServer
 from .runtime.factory import build_foundry_client, build_vision
 from .vision.frame_server import run_frame_server
@@ -195,12 +197,17 @@ def _build_overrides(args: argparse.Namespace) -> dict[str, Any]:
     return overrides
 
 
-async def _command_poller(client: FoundryClient, cfg: Config) -> None:
+async def _command_poller(
+    client: FoundryClient,
+    cfg: Config,
+    reasoner: Reasoner | None = None,
+    reasoning_store: ReasoningStore | None = None,
+) -> None:
     cursor: str | None = None
     while True:
         envelopes, invalid = await client.poll_commands(cursor)
 
-        # Valid commands → log + ACK (WILCO or ROGER per verb).
+        # Valid commands → log + ACK + (if LLM is wired) reason and publish.
         for env in envelopes:
             verb = env.payload.get("verb", "")
             log.info(
@@ -209,8 +216,54 @@ async def _command_poller(client: FoundryClient, cfg: Config) -> None:
                 verb=verb,
                 params=env.payload.get("params"),
             )
+            # ACK first so the operator UI flips to ACKED quickly, before
+            # any (potentially multi-second) LLM inference.
             await client.ack_command(env.message_id, result=_ack_result_for(verb))
             cursor = env.message_id
+
+            # Run the reasoner inline if configured. Failures are logged but
+            # don't crash the poller — next command still gets a chance.
+            if reasoner is not None:
+                try:
+                    reasoning = await reasoner.step(
+                        ReasoningInput(intent=env.payload, detections=[], frame_jpeg=None)
+                    )
+                    log.info(
+                        "reasoning_step",
+                        message_id=env.message_id,
+                        verb=verb,
+                        decision=reasoning.decision,
+                        rationale=reasoning.rationale,
+                        tokens=reasoning.tokens,
+                    )
+                    # 1) Push to the local HTTP store for live UI display.
+                    if reasoning_store is not None:
+                        reasoning_store.put(
+                            command_id=env.message_id,
+                            verb=verb,
+                            decision=reasoning.decision,
+                            rationale=reasoning.rationale,
+                            tokens=reasoning.tokens,
+                        )
+                    # 2) Publish ReasoningTrace to Foundry for permanent storage.
+                    trace = encode_telemetry(
+                        sender=f"drone-{cfg.drone_id}",
+                        event="ReasoningTrace",
+                        fields={
+                            "command_id": env.message_id,
+                            "decision": reasoning.decision,
+                            "rationale": reasoning.rationale[:500],
+                            "tokens": reasoning.tokens,
+                        },
+                    )
+                    await client.post_telemetry([trace])
+                except Exception as exc:                       # noqa: BLE001
+                    log.error(
+                        "reasoning_failed",
+                        message_id=env.message_id,
+                        verb=verb,
+                        error=str(exc),
+                    )
 
         # Invalid commands → ACK once with UNABLE so operator UI flips to REJECTED.
         # Per policy rule: "Unparseable commands return UNABLE with reason
@@ -298,17 +351,41 @@ async def _run_test_mode(cfg: Config) -> None:
 
 
 async def _run_production_mode(cfg: Config) -> None:
-    """Default path: optionally spawn llama-server, run Foundry poller + emitter + frame server."""
+    """Default path: optionally spawn llama-server, run Foundry poller + emitter + frame + reasoning servers."""
     foundry = build_foundry_client(cfg)
     assert foundry is not None, "production mode requires a Foundry client"
 
+    # Reasoner is wired only when the LLM backend is non-mock. Caller controls
+    # this via VICTUS_LLM_BACKEND=llama_cpp_server (typical) or "mock".
     async def _run_with_server() -> None:
-        async with foundry as client:
-            await asyncio.gather(
-                _command_poller(client, cfg),
-                _telemetry_emitter(client, cfg),
-                run_frame_server(client, cfg),
-            )
+        reasoner: Reasoner | None = None
+        reasoning_store: ReasoningStore | None = None
+        llm_client_ctx: LlamaCppClient | None = None
+
+        if cfg.llm_backend == "llama_cpp_server":
+            llm_client_ctx = LlamaCppClient(cfg.llm_server_url, timeout_s=60.0)
+            await llm_client_ctx.__aenter__()
+            reasoner = Reasoner(backend=cfg.llm_backend, client=llm_client_ctx)
+            reasoning_store = ReasoningStore()
+            log.info("reasoner_wired", backend=cfg.llm_backend, url=cfg.llm_server_url)
+        elif cfg.llm_backend == "mock":
+            reasoner = Reasoner(backend="mock")
+            reasoning_store = ReasoningStore()
+            log.info("reasoner_wired", backend="mock")
+
+        try:
+            async with foundry as client:
+                tasks = [
+                    _command_poller(client, cfg, reasoner, reasoning_store),
+                    _telemetry_emitter(client, cfg),
+                    run_frame_server(client, cfg),
+                ]
+                if reasoning_store is not None:
+                    tasks.append(run_reasoning_server(reasoning_store))
+                await asyncio.gather(*tasks)
+        finally:
+            if llm_client_ctx is not None:
+                await llm_client_ctx.__aexit__(None, None, None)
 
     if cfg.manage_llama_server and cfg.llm_model_path:
         async with LlamaServer(cfg.llm_model_path, cfg.llm_mmproj_path):
