@@ -1,0 +1,25 @@
+{
+  "name": "victus-bff",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "predev": "lsof -ti:8787 | xargs kill -9 2>/dev/null; true",
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "undici": "^6.21.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.10.1",
+    "tsx": "^4.19.2",
+    "typescript": "~5.9.3"
+  }
+}
