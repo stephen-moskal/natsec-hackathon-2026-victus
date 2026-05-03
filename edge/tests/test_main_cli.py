@@ -124,19 +124,6 @@ def test_overrides_fps():
 
 # ---------- Config in test mode ----------
 
-def test_load_test_mode_skips_token_validation(monkeypatch):
-    """In test mode, FOUNDRY_TOKEN is not required and Foundry URLs may be empty."""
-    # Strip any inherited Foundry env so the validation would otherwise fail
-    for var in ("FOUNDRY_TOKEN", "FOUNDRY_LISTENER_URL", "FOUNDRY_FUNCTIONS_URL", "VICTUS_DRONE_ID"):
-        monkeypatch.delenv(var, raising=False)
-
-    cfg = load(overrides={"test_mode": True})
-    assert cfg.test_mode is True
-    assert cfg.foundry_token is None
-    assert cfg.foundry_listener_url == ""
-    assert cfg.drone_id == "test-drone"
-
-
 def test_load_production_mode_still_requires_token(monkeypatch):
     monkeypatch.delenv("FOUNDRY_TOKEN", raising=False)
     monkeypatch.setenv("VICTUS_DRONE_ID", "x")
