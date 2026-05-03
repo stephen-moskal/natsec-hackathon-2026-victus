@@ -12,9 +12,9 @@ const RESULT_DISMISS_MS = 15_000;
 
 export default function CommandPalette({ drones }: { drones: Drone[] }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [verb, setVerb] = useState<Verb>("HOLD");
+  const [verb, setVerb] = useState<Verb>("REPORT");
   const [priority, setPriority] = useState<Priority>("PRIORITY");
-  const [paramsJson, setParamsJson] = useState<string>(VERB_PARAMS_SKELETON.HOLD);
+  const [paramsJson, setParamsJson] = useState<string>(VERB_PARAMS_SKELETON.REPORT);
   const [expiresInSec, setExpiresInSec] = useState<number>(3600);
   const [sending, setSending] = useState(false);
   const [results, setResults] = useState<IssueCommandResult[] | null>(null);
@@ -118,7 +118,7 @@ export default function CommandPalette({ drones }: { drones: Drone[] }) {
       </div>
 
       <div className="border-t border-gray-800 pt-2">
-        <ParamsEditor value={paramsJson} onChange={setParamsJson} />
+        <ParamsEditor verb={verb} value={paramsJson} onChange={setParamsJson} />
       </div>
 
       <button

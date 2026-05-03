@@ -1,9 +1,12 @@
 import { useMemo } from "react";
+import { VERB_EXAMPLES, type Verb } from "../../lib/verbs";
 
 export default function ParamsEditor({
+  verb,
   value,
   onChange,
 }: {
+  verb: Verb;
   value: string;
   onChange: (next: string) => void;
 }) {
@@ -17,6 +20,8 @@ export default function ParamsEditor({
     }
   }, [value]);
 
+  const examples = VERB_EXAMPLES[verb] ?? [];
+
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between">
@@ -28,10 +33,21 @@ export default function ParamsEditor({
       <textarea
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        rows={5}
+        rows={6}
         spellCheck={false}
         className="w-full bg-gray-950 border border-gray-700 focus:border-blue-600 rounded px-2 py-1.5 text-[11px] font-mono text-gray-100 outline-none resize-y"
       />
+      {examples.length > 0 && (
+        <div className="text-[10px] text-gray-600 leading-relaxed">
+          <span className="text-gray-500 font-medium">e.g.</span>{" "}
+          {examples.map((ex, i) => (
+            <span key={ex}>
+              <span className="italic">"{ex}"</span>
+              {i < examples.length - 1 && " · "}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
