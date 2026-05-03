@@ -20,6 +20,7 @@ from .comms.auth import TokenProvider
 from .comms.foundry_client import FoundryClient, FoundryEndpoints
 from .comms.protocol import encode_telemetry
 from .config import Config, load
+from .vision.frame_server import run_frame_server
 
 
 log = structlog.get_logger(__name__)
@@ -145,6 +146,7 @@ async def run_async() -> None:
         await asyncio.gather(
             _command_poller(client, cfg),
             _telemetry_emitter(client, cfg),
+            run_frame_server(client, cfg),
         )
 
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Command, Drone } from "../../api/types";
 import Card from "../shared/Card";
 import StatusChip from "../shared/StatusChip";
@@ -11,6 +11,36 @@ import { linkStatusFrom } from "../../lib/linkStatus";
 import { timeAgo } from "../../lib/formatTime";
 
 const COMMANDS_POLL_MS = 3000;
+const VIDEO_REFRESH_MS = 1000; // 1 fps — low bandwidth, still feels live
+
+function VideoFeed({ droneId }: { droneId: string }) {
+  const [ts, setTs] = useState(() => Date.now());
+  const [error, setError] = useState(false);
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    timerRef.current = window.setInterval(() => setTs(Date.now()), VIDEO_REFRESH_MS);
+    return () => { if (timerRef.current) window.clearInterval(timerRef.current); };
+  }, []);
+
+  const src = `/api/frame/${encodeURIComponent(droneId)}?t=${ts}`;
+
+  return (
+    <div className="relative bg-black rounded border border-gray-800 aspect-video overflow-hidden flex items-center justify-center">
+      {error ? (
+        <div className="text-[11px] text-gray-600 font-mono">NO VIDEO · frame server unreachable</div>
+      ) : (
+        <img
+          src={src}
+          alt={`${droneId} camera`}
+          className="w-full h-full object-cover"
+          onLoad={() => setError(false)}
+          onError={() => setError(true)}
+        />
+      )}
+    </div>
+  );
+}
 const COMMANDS_LIMIT = 10; // need a few extra so CurrentMissionPanel can scan back past stale ASSIGN_MISSIONs
 
 export default function DroneCard({ drone }: { drone: Drone }) {
@@ -63,12 +93,8 @@ export default function DroneCard({ drone }: { drone: Drone }) {
         <StatusChip status={status} />
       </div>
 
-      {/* video placeholder */}
-      <div className="relative bg-black/60 rounded border border-gray-800 aspect-video flex items-center justify-center">
-        <div className="text-[11px] text-gray-600 font-mono">
-          NO VIDEO · awaiting Phase 2 vision pipeline
-        </div>
-      </div>
+      {/* live video feed */}
+      <VideoFeed droneId={drone.drone_id} />
 
       {/* telemetry */}
       <TelemetryPanel drone={drone} />

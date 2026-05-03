@@ -1,6 +1,7 @@
 import express, { type Request, type Response } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import { fetch as undiciFetch } from "undici";
 import type {
   Drone,
   Command,
@@ -413,6 +414,49 @@ app.post("/api/issue-command", async (req: Request, res: Response<IssueCommandRe
     };
   });
   res.json(results);
+});
+
+// ── Video frame proxy (Phase 4c live path) ─────────────────────────────────
+//
+// GET /api/frame/:deviceId
+//
+// Proxies directly to the edge's frame server (port 8888) on the Jetson.
+// Bypasses the Foundry batch pipeline entirely for near-real-time display.
+// The edge simultaneously publishes FrameThumbnail events to raw_telemetry
+// so frames are also captured and stored in Foundry for historical analysis.
+//
+// JETSON_HOST env var controls the target (default: 192.168.55.1 USB-C tether).
+
+const JETSON_HOST = (process.env.JETSON_HOST ?? "192.168.55.1").replace(/\/$/, "");
+const FRAME_SERVER_PORT = Number(process.env.JETSON_FRAME_PORT ?? 8888);
+
+// Map deviceId → host so multi-drone setups can route to different Jetsons.
+const DEVICE_HOSTS: Record<string, string> = {
+  "uav-01": JETSON_HOST,
+};
+
+app.get("/api/frame/:deviceId", async (req: Request, res: Response) => {
+  const deviceId = String(req.params.deviceId);
+  const host = DEVICE_HOSTS[deviceId];
+  if (!host) {
+    res.status(404).send("No frame server configured for this device");
+    return;
+  }
+  const url = `http://${host}:${FRAME_SERVER_PORT}/frame`;
+
+  try {
+    const upstream = await undiciFetch(url, { signal: AbortSignal.timeout(3000) });
+    if (!upstream.ok) {
+      res.status(upstream.status).send("No frame available");
+      return;
+    }
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    res.set("Content-Type", "image/jpeg");
+    res.set("Cache-Control", "no-store");
+    res.send(buf);
+  } catch {
+    res.status(503).send("Edge frame server unreachable");
+  }
 });
 
 app.listen(PORT, () => {
