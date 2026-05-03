@@ -1,13 +1,15 @@
 # Hackathon Plan
 
-## Success criteria (judged demo)
+## Where we are right now (snapshot)
 
-1. **Loop closed.** Operator clicks an action in Foundry Workshop → command arrives at the edge → ACK is visible in Workshop within seconds.
-2. **Reasoning visible.** A live feed of LLM reasoning text and detections from at least one (simulated) drone shows up on the dashboard.
-3. **Multi-drone.** Two or three simulated edge nodes are commanded independently from one Workshop view.
-4. **Survives link drop.** A scripted comms outage is shown; on reconnect, buffered telemetry flushes and the dashboard catches up without manual intervention.
+| Demo criterion | Status | Notes |
+|---|---|---|
+| 1. **Loop closed** — operator click → edge → ACK visible | ✅ done | Round-trip ~1s. Operator surface is the React UI in [`ui/`](../ui/) (and direct curl), not Workshop. Foundry-side command status flip PENDING→ACKED still pending the Phase 4 streaming transform; until then the UI shows the ACK on the edge log but the `command.status` field stays PENDING. |
+| 2. **Reasoning visible** — live LLM reasoning + detections | ⏳ partial | Telemetry pipe exists for `ReasoningTrace` and `Detection` envelopes; UI placeholders are in `LLMTracePanel` / `VideoPanel` waiting on Phase 4 `last_reasoning` and `last_frame` ontology objects + transforms. The on-board LLM is itself stubbed (`mock` reasoner) — wiring Gemma 3 / Qwen2.5-VL is Phase 4+. |
+| 3. **Multi-drone** — N drones commanded independently from one view | ✅ done (orchestration side) | Command palette multi-selects drones and fans out via `Promise.allSettled`. Mission editor assigns one mission to N drones in a single action. Limit today is that only one Jetson is running an actual edge process — the other rows are seed data. |
+| 4. **Survives link drop** — scripted outage + clean recovery | ❌ not yet | Edge has the buffer hook (`drain_buffer()` placeholder) but persistence to disk is Phase 1.1 in the original sequencing. |
 
-If we hit (1) and (2) we have a credible demo. (3) and (4) win the track.
+The implementation phases below describe the **original** strategy. The numbering since then has drifted because we replaced "Workshop dashboard" with a React UI + BFF, and split that work across our internal Phases 0–3. See the root [README.md](../README.md) for the current state.
 
 ## Phases
 

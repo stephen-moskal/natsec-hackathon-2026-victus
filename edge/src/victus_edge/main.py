@@ -3,7 +3,7 @@
 Phase 1.0 wiring: two concurrent asyncio tasks share a single FoundryClient.
 
   - command_poller: every COMMAND_POLL_INTERVAL_S, calls pollCommands, logs
-    each new command, immediately ACKs with result=ACCEPTED. The reasoner is
+    each new command, immediately ACKs with result=WILCO. The reasoner is
     not yet wired in — Phase 2 plugs into the same dispatch point.
   - telemetry_emitter: every POSITION_EMIT_INTERVAL_S, emits a Position
     heartbeat with mocked coordinates. Real GPS lands in Phase 2.
@@ -47,19 +47,44 @@ def _build_token_provider(cfg: Config) -> TokenProvider:
     )
 
 
+# Verbs whose ACK should be ROGER (received & understood) rather than WILCO
+# (acknowledged & will comply). Per drone_command_policy.json: REPORT is a
+# read-only request — there's nothing to "comply" with.
+_ROGER_VERBS: frozenset[str] = frozenset({"REPORT"})
+
+
+def _ack_result_for(verb: str) -> str:
+    return "ROGER" if verb in _ROGER_VERBS else "WILCO"
+
+
 async def _command_poller(client: FoundryClient, cfg: Config) -> None:
     cursor: str | None = None
     while True:
-        envelopes = await client.poll_commands(cursor)
+        envelopes, invalid = await client.poll_commands(cursor)
+
+        # Valid commands → log + ACK (WILCO or ROGER per verb).
         for env in envelopes:
+            verb = env.payload.get("verb", "")
             log.info(
                 "command_received",
                 message_id=env.message_id,
-                verb=env.payload.get("verb"),
+                verb=verb,
                 params=env.payload.get("params"),
             )
-            await client.ack_command(env.message_id, result="ACCEPTED")
+            await client.ack_command(env.message_id, result=_ack_result_for(verb))
             cursor = env.message_id
+
+        # Invalid commands → ACK once with UNABLE so operator UI flips to REJECTED.
+        # Per policy rule: "Unparseable commands return UNABLE with reason
+        # 'command unclear, say again'."
+        for ic in invalid:
+            log.warning("acking_unable", message_id=ic.message_id, reason=ic.reason)
+            await client.ack_command(
+                ic.message_id,
+                result="UNABLE",
+                reason=ic.reason or "command unclear, say again",
+            )
+
         await asyncio.sleep(cfg.command_poll_interval_s)
 
 

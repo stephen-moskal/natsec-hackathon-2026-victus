@@ -1,7 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://victus.natsec/protocol/0.2.0/command.schema.json",
+  "$id": "https://victus.natsec/protocol/0.3.0/command.schema.json",
   "title": "VICTUS command payload",
+  "description": "Aligned with drone_command_policy.json — the dictionary the on-board LLM responds to.",
   "type": "object",
   "required": ["drone_id", "verb", "priority", "expires_at", "params"],
   "additionalProperties": false,
@@ -9,7 +10,20 @@
     "drone_id": { "type": "string" },
     "verb": {
       "type": "string",
-      "enum": ["SCAN", "LOITER", "INVESTIGATE", "FOLLOW", "RTB", "HOLD", "ABORT", "ASSIGN_MISSION"]
+      "enum": [
+        "ABORT",
+        "RTB",
+        "GOTO",
+        "ALTITUDE",
+        "LOITER",
+        "SEARCH",
+        "OBSERVE",
+        "REPORT",
+        "TRACK",
+        "IDENTIFY",
+        "ASSIGN_MISSION"
+      ],
+      "description": "Policy command (priority 1–10) or ASSIGN_MISSION (operator-issued mission delivery)."
     },
     "priority": {
       "type": "string",
@@ -30,7 +44,7 @@
     },
     "params": {
       "type": "object",
-      "description": "Verb-specific parameters. Validated per-verb at the application layer; see docs/PROTOCOL.md."
+      "description": "Verb-specific parameters per the policy schema. Validated per-verb at the application layer; see docs/PROTOCOL.md and drone_command_policy.json."
     }
   }
 }
