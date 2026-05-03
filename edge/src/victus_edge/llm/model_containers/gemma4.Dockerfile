@@ -17,10 +17,16 @@
 #   docker build -f edge/src/victus_edge/llm/model_containers/gemma4.Dockerfile \
 #                -t victus_edge/gemma4:latest .
 #
-# Run:
+# Run (production — Foundry comms loop):
+#   docker run --runtime nvidia --rm --network host \
+#     -v ~/models:/opt/models:ro --env-file .env \
+#     victus_edge/gemma4:latest
+#
+# Run (--test — VLM describes webcam frames, no Foundry):
 #   docker run --runtime nvidia --rm --network host \
 #     -v ~/models:/opt/models:ro \
-#     victus_edge/gemma4:latest
+#     --device /dev/video0 \
+#     victus_edge/gemma4:latest --webcam 0 --test
 
 ARG L4T_TAG=r36.4.0
 FROM dustynv/llama_cpp:${L4T_TAG}
@@ -82,9 +88,6 @@ COPY shared/ /opt/shared/
 # mostly a no-op for deps but registers the package + console script.
 RUN pip install --no-cache-dir -e /opt/victus_edge
 
-COPY edge/src/victus_edge/llm/model_containers/entrypoint.sh /opt/victus_edge/entrypoint.sh
-RUN chmod +x /opt/victus_edge/entrypoint.sh
-
 ENV PYTHONPATH=/opt/victus_edge/src \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility,video \
@@ -92,5 +95,9 @@ ENV PYTHONPATH=/opt/victus_edge/src \
     VICTUS_LLM_MODEL_PATH=/opt/models/gemma4/gemma-4-E4B-it-Q4_K_M.gguf \
     VICTUS_LLM_MMPROJ_PATH=/opt/models/gemma4/mmproj-gemma-4-E4B-it-BF16.gguf
 
-ENTRYPOINT ["/opt/victus_edge/entrypoint.sh"]
-CMD []
+# main.py is the single supervisor: it spawns llama-server as an asyncio
+# subprocess and (optionally) drives the webcam + Foundry comms loops.
+# CMD provides a default --model so `docker run <image>` with no args still
+# launches the production path. CLI args from `docker run` override.
+ENTRYPOINT ["python3", "-m", "victus_edge.main"]
+CMD ["--model", "gemma4"]
