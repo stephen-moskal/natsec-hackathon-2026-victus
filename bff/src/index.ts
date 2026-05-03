@@ -1,7 +1,44 @@
 import express, { type Request, type Response } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import { fetch as undiciFetch } from "undici";
+import http from "node:http";
+
+// Node's URL parser rejects IPv6 link-local zone IDs (e.g. fe80::1%25en11),
+// so undici can't proxy to per-interface Jetson hosts. Node's raw http.request
+// accepts {host, port, path} with a bare zone ID and works fine. This helper
+// hides the URL parsing so callers can pass either bracketed or bare hosts.
+type FetchResult = { status: number; body: Buffer; headers: http.IncomingHttpHeaders };
+
+function parseHost(hostStr: string): string {
+  // Strip surrounding brackets and decode %25 → % (URL→bare zone ID).
+  let h = hostStr.trim();
+  if (h.startsWith("[") && h.endsWith("]")) h = h.slice(1, -1);
+  return h.replace(/%25/gi, "%");
+}
+
+function rawHttpFetch(
+  host: string,
+  port: number,
+  path: string,
+  method: "GET" | "HEAD" = "GET",
+  timeoutMs = 2000,
+): Promise<FetchResult> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: parseHost(host), port, path, method, timeout: timeoutMs },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () =>
+          resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks), headers: res.headers }),
+        );
+      },
+    );
+    req.on("error", reject);
+    req.on("timeout", () => { req.destroy(new Error("timeout")); });
+    req.end();
+  });
+}
 import type {
   Drone,
   Command,
@@ -83,16 +120,17 @@ app.get("/api/health", async (_req: Request, res: Response<FoundryHealth>) => {
 // reflects "is it actually reachable right now" rather than waiting for the
 // 5-15 min Foundry streaming flush + transform rebuild cycle.
 async function liveLinkProbe(deviceId: string): Promise<boolean> {
-  // Routing same as the frame proxy — DEVICE_HOSTS is the source of truth.
-  // We declare it below; this function reads it via closure once defined.
+  // Any successful HTTP response means the host is up — even 503-no-frame
+  // (drone has no webcam) or 404 (no path matched) prove the edge process
+  // is running and answering. Only a connection failure / timeout means down.
   const host = DEVICE_HOSTS[deviceId];
   if (!host) return false;
   try {
-    const res = await undiciFetch(`http://${host}:${FRAME_SERVER_PORT}/frame`, {
-      method: "HEAD",
-      signal: AbortSignal.timeout(800),
-    });
-    return res.status < 500; // 200 or 503-no-frame both mean "host is up"
+    // The Jetson frame_server returns the JPEG body regardless of method,
+    // and Node's HTTP parser can't reconcile a body with a HEAD response —
+    // so we use GET and just discard the body. Frames are <30KB so this is cheap.
+    const r = await rawHttpFetch(host, FRAME_SERVER_PORT, "/frame", "GET", 1500);
+    return r.status > 0;
   } catch {
     return false;
   }
@@ -462,17 +500,16 @@ app.post("/api/issue-command", async (req: Request, res: Response<IssueCommandRe
 //
 // JETSON_HOST env var controls the target (default: 192.168.55.1 USB-C tether).
 
-const JETSON_HOST = (process.env.JETSON_HOST ?? "192.168.55.1").replace(/\/$/, "");
 const FRAME_SERVER_PORT = Number(process.env.JETSON_FRAME_PORT ?? 8888);
 
-// Only devices listed here have a live frame server. Others return 404 immediately
-// so the UI shows "NO VIDEO" rather than serving the wrong camera.
-//
-// JETSON_HOST currently points to whichever Jetson is on the USB-C tether
-// (192.168.55.1). Today that's BRAVO (uav-02); ALPHA was unplugged.
-const DEVICE_HOSTS: Record<string, string> = {
-  "uav-02": JETSON_HOST,
-};
+// Per-drone hosts. When multiple Jetsons are tethered they all default to
+// 192.168.55.1 — we use IPv6 link-local zone IDs (e.g. [fe80::1%25en11]) to
+// route to a specific Jetson via a specific USB-C interface. Set in bff/.env:
+//   ALPHA_HOST=[fe80::1%25enXX]
+//   BRAVO_HOST=[fe80::1%25enYY]
+const DEVICE_HOSTS: Record<string, string> = {};
+if (process.env.ALPHA_HOST) DEVICE_HOSTS["uav-01"] = process.env.ALPHA_HOST;
+if (process.env.BRAVO_HOST) DEVICE_HOSTS["uav-02"] = process.env.BRAVO_HOST;
 
 // In-memory frame cache — last successfully fetched JPEG per device.
 // When the Jetson is unreachable (USB-C unplugged etc.) we serve the cached
@@ -490,17 +527,13 @@ app.get("/api/frame/:deviceId", async (req: Request, res: Response) => {
 
   // Primary: live Jetson frame server (~5ms when USB-C tether is up).
   try {
-    const upstream = await undiciFetch(
-      `http://${host}:${FRAME_SERVER_PORT}/frame`,
-      { signal: AbortSignal.timeout(2000) },
-    );
-    if (upstream.ok) {
-      const buf = Buffer.from(await upstream.arrayBuffer());
-      frameCache.set(deviceId, buf);          // keep a hot copy for fallback
+    const upstream = await rawHttpFetch(host, FRAME_SERVER_PORT, "/frame", "GET", 2000);
+    if (upstream.status >= 200 && upstream.status < 300) {
+      frameCache.set(deviceId, upstream.body); // keep a hot copy for fallback
       res.set("Content-Type", "image/jpeg");
       res.set("Cache-Control", "no-store");
       res.set("X-Frame-Source", "live");
-      res.send(buf);
+      res.send(upstream.body);
       return;
     }
   } catch {
@@ -539,10 +572,8 @@ app.get("/api/frame/:deviceId", async (req: Request, res: Response) => {
 const REASONING_PORT = Number(process.env.JETSON_REASONING_PORT ?? 8889);
 
 const REASONING_DEVICE_HOSTS: Record<string, string> = {};
-if (process.env.BRAVO_HOST) {
-  REASONING_DEVICE_HOSTS["uav-02"] = process.env.BRAVO_HOST.replace(/\/$/, "");
-}
-// Add other drones here as their LLMs come online (e.g. uav-01: JETSON_HOST).
+if (process.env.BRAVO_HOST) REASONING_DEVICE_HOSTS["uav-02"] = process.env.BRAVO_HOST;
+if (process.env.ALPHA_HOST_HAS_LLM) REASONING_DEVICE_HOSTS["uav-01"] = process.env.ALPHA_HOST!;
 
 const reasoningCache = new Map<string, unknown>();
 
@@ -557,12 +588,9 @@ app.get("/api/reasoning/:deviceId", async (req: Request, res: Response) => {
 
   // Primary: live reasoning server on the Jetson.
   try {
-    const upstream = await undiciFetch(
-      `http://${host}:${REASONING_PORT}/reasoning`,
-      { signal: AbortSignal.timeout(2000) },
-    );
-    if (upstream.ok) {
-      const json = await upstream.json();
+    const upstream = await rawHttpFetch(host, REASONING_PORT, "/reasoning", "GET", 2000);
+    if (upstream.status >= 200 && upstream.status < 300) {
+      const json = JSON.parse(upstream.body.toString("utf-8"));
       reasoningCache.set(deviceId, json);
       res.set("X-Source", "live");
       res.set("Cache-Control", "no-store");

@@ -90,7 +90,9 @@ async def run_reasoning_server(store: ReasoningStore) -> None:
         finally:
             writer.close()
 
-    server = await asyncio.start_server(handle_client, "0.0.0.0", REASONING_SERVER_PORT)
+    server = await asyncio.start_server(
+        handle_client, ["0.0.0.0", "::"], REASONING_SERVER_PORT,
+    )
     log.info("reasoning_http_server_started", port=REASONING_SERVER_PORT)
     async with server:
         await server.serve_forever()

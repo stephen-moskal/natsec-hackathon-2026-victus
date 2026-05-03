@@ -1,8 +1,9 @@
-"""Verb-dispatch tests for the Reasoner.
+"""Tests for the doctrine-driven, mission-aware Reasoner.
 
-We mock LlamaCppClient at the method level so we can assert which path
-(`describe_frame` vs `chat_completion`) was taken for each verb category,
-and inspect the prompt string the reasoner built.
+The reasoner uses doctrine.system.md as the system prompt with the active
+mission overlay injected (§7), and parses the model's CMD/REPLY/RATIONALE
+output (§8). We mock LlamaCppClient at the method level so we can inspect
+the system + user messages and assert which path was taken.
 """
 
 import asyncio
@@ -16,8 +17,6 @@ from victus_edge.llm.reasoner import Reasoner, ReasoningInput
 
 
 class _StubFrameStore:
-    """Minimal stand-in for vision.frame_server.FrameStore."""
-
     def __init__(self, jpeg: bytes | None = None) -> None:
         self._jpeg = jpeg
 
@@ -26,19 +25,21 @@ class _StubFrameStore:
 
 
 class _RecordingClient:
-    """LlamaCppClient stand-in that records which methods were called."""
+    """LlamaCppClient stand-in that records calls to chat_completion."""
 
-    def __init__(self, reply: str = "DECISION: ok\nRATIONALE: stub reply") -> None:
-        self.reply = reply
-        self.describe_calls: list[tuple[bytes, str]] = []
+    def __init__(self, reply: str | None = None) -> None:
+        self.reply = reply or (
+            "CMD: REPORT subject=\"current scene\"\n"
+            "REPLY: ROGER\n"
+            "RATIONALE: Acknowledging the report request and providing the current scene description."
+        )
         self.chat_calls: list[list[dict]] = []
-
-    async def describe_frame(self, jpeg: bytes, prompt: str, **_: Any) -> str:
-        self.describe_calls.append((jpeg, prompt))
-        return self.reply
 
     async def chat_completion(self, messages: list[dict], **_: Any) -> str:
         self.chat_calls.append(messages)
+        return self.reply
+
+    async def describe_frame(self, jpeg: bytes, prompt: str, **_: Any) -> str:  # not used now
         return self.reply
 
 
@@ -55,70 +56,27 @@ def _run(coro):
 def test_mock_backend_returns_mock_decision() -> None:
     r = Reasoner(backend="mock")
     out = _run(r.step(ReasoningInput(intent=_intent("REPORT"), detections=[], frame_jpeg=None)))
-    assert out.decision == "mock-report"
+    assert "mock-report" in out.decision
     assert "mock backend" in out.rationale
 
 
-# ── Vision verbs use describe_frame when a frame is available ─────────────
+# ── Doctrine drives the system prompt ────────────────────────────────────
 
-@pytest.mark.parametrize("verb", ["REPORT", "SEARCH", "OBSERVE", "TRACK", "IDENTIFY"])
-def test_vision_verb_with_frame_uses_describe(verb: str) -> None:
-    client = _RecordingClient(reply="DECISION: see\nRATIONALE: I see a thing.")
-    store = _StubFrameStore(jpeg=b"FAKEJPEG")
-    r = Reasoner(backend="llama_cpp_server", client=client, frame_store=store)  # type: ignore[arg-type]
-    out = _run(r.step(ReasoningInput(intent=_intent(verb, target="boat"), detections=[], frame_jpeg=None)))
-    assert len(client.describe_calls) == 1
-    assert len(client.chat_calls) == 0
-    sent_jpeg, sent_prompt = client.describe_calls[0]
-    assert sent_jpeg == b"FAKEJPEG"
-    assert verb in sent_prompt
-    assert out.decision == "see"
-
-
-# ── Vision verbs without a frame fall back to text-only with a note ──────
-
-def test_vision_verb_without_frame_falls_back_to_chat() -> None:
+def test_system_prompt_is_doctrine() -> None:
+    """First message in every chat call is the doctrine system prompt."""
     client = _RecordingClient()
-    store = _StubFrameStore(jpeg=None)
-    r = Reasoner(backend="llama_cpp_server", client=client, frame_store=store)  # type: ignore[arg-type]
+    r = Reasoner(backend="llama_cpp_server", client=client)
     _run(r.step(ReasoningInput(intent=_intent("REPORT"), detections=[], frame_jpeg=None)))
-    assert len(client.describe_calls) == 0
-    assert len(client.chat_calls) == 1
-    # The fallback prompt explicitly notes no frame is available.
-    assert "No live camera frame" in client.chat_calls[0][-1]["content"]
+    sys_msg = client.chat_calls[0][0]
+    assert sys_msg["role"] == "system"
+    # Doctrine has these section anchors — fail loudly if the loader broke.
+    assert "VICTUS" in sys_msg["content"]
+    assert "Brevity-reply vocabulary" in sys_msg["content"]
+    assert "Output contract" in sys_msg["content"]
 
 
-# ── Motion verbs use chat with MAVLink-output prompt ─────────────────────
-
-@pytest.mark.parametrize("verb", ["GOTO", "ALTITUDE", "LOITER"])
-def test_motion_verb_uses_chat_with_mavlink_prompt(verb: str) -> None:
-    client = _RecordingClient(
-        reply='DECISION: navigate\nRATIONALE: ```json\n{"mavlink_cmd":"MAV_CMD_NAV_WAYPOINT"}\n```'
-    )
-    r = Reasoner(backend="llama_cpp_server", client=client)
-    _run(r.step(ReasoningInput(intent=_intent(verb, destination="Alcatraz"), detections=[], frame_jpeg=None)))
-    assert len(client.describe_calls) == 0
-    assert len(client.chat_calls) == 1
-    user_msg = client.chat_calls[0][-1]["content"]
-    assert "MAVLink" in user_msg
-    assert verb in user_msg
-
-
-# ── Safety verbs use chat with simple acknowledgment prompt ──────────────
-
-@pytest.mark.parametrize("verb", ["ABORT", "RTB"])
-def test_safety_verb_uses_chat_acknowledgment(verb: str) -> None:
-    client = _RecordingClient()
-    r = Reasoner(backend="llama_cpp_server", client=client)
-    _run(r.step(ReasoningInput(intent=_intent(verb), detections=[], frame_jpeg=None)))
-    assert len(client.describe_calls) == 0
-    assert len(client.chat_calls) == 1
-    assert "halt" in client.chat_calls[0][-1]["content"].lower() or "return" in client.chat_calls[0][-1]["content"].lower()
-
-
-# ── Mission context flows into the prompt ────────────────────────────────
-
-def test_active_mission_appears_in_prompt_header() -> None:
+def test_mission_overlay_injected_into_system_prompt() -> None:
+    """ASSIGN_MISSION → mission appears in the doctrine overlay block."""
     client = _RecordingClient()
     ms = MissionState()
 
@@ -131,25 +89,162 @@ def test_active_mission_appears_in_prompt_header() -> None:
         "params": {
             "mission_id": "mid-12345678",
             "name": "Recon Sector 7",
-            "system_prompt": "Scan the harbor and report contacts.",
+            "system_prompt": "Scan the harbor and report contacts every 60 seconds.",
         },
     }))
-
     r = Reasoner(backend="llama_cpp_server", client=client, mission_state=ms)
     _run(r.step(ReasoningInput(intent=_intent("REPORT"), detections=[], frame_jpeg=None)))
-    sent = client.chat_calls[0][-1]["content"]
-    assert "Recon Sector 7" in sent
-    assert "Scan the harbor" in sent
+
+    sys_msg = client.chat_calls[0][0]["content"]
+    # Mission block should be inside <MISSION_OVERLAY> markers.
+    assert "<MISSION_OVERLAY>" in sys_msg
+    assert "Recon Sector 7" in sys_msg
+    assert "Scan the harbor" in sys_msg
+    # Placeholder line should be gone when mission is active.
+    assert "(no mission assigned" not in sys_msg
 
 
-# ── nl_context flows into the prompt ─────────────────────────────────────
+def test_no_mission_keeps_overlay_placeholder() -> None:
+    client = _RecordingClient()
+    r = Reasoner(backend="llama_cpp_server", client=client, mission_state=MissionState())
+    _run(r.step(ReasoningInput(intent=_intent("REPORT"), detections=[], frame_jpeg=None)))
+    sys_msg = client.chat_calls[0][0]["content"]
+    assert "(no mission assigned" in sys_msg
 
-def test_nl_context_in_prompt() -> None:
+
+# ── User prompt is plain-English tasking ─────────────────────────────────
+
+def test_goto_user_prompt_is_natural_language() -> None:
     client = _RecordingClient()
     r = Reasoner(backend="llama_cpp_server", client=client)
     _run(r.step(ReasoningInput(
-        intent=_intent("REPORT", nl_context="describe what you see right now"),
+        intent=_intent("GOTO", destination="Alcatraz", altitude=400),
         detections=[], frame_jpeg=None,
     )))
-    sent = client.chat_calls[0][-1]["content"]
-    assert "describe what you see right now" in sent
+    user = client.chat_calls[0][1]
+    # Could be a string or list-of-content (multimodal). Get text.
+    if isinstance(user["content"], str):
+        text = user["content"]
+    else:
+        text = user["content"][0].get("text", "")
+    assert "Alcatraz" in text
+    assert "400" in text
+
+
+def test_search_user_prompt_includes_target_and_area() -> None:
+    client = _RecordingClient()
+    r = Reasoner(backend="llama_cpp_server", client=client)
+    _run(r.step(ReasoningInput(
+        intent=_intent("SEARCH", area="the harbor", target="small boats"),
+        detections=[], frame_jpeg=None,
+    )))
+    user = client.chat_calls[0][1]
+    text = user["content"] if isinstance(user["content"], str) else user["content"][0]["text"]
+    assert "small boats" in text
+    assert "the harbor" in text
+
+
+def test_nl_context_appended_as_clarification() -> None:
+    client = _RecordingClient()
+    r = Reasoner(backend="llama_cpp_server", client=client)
+    _run(r.step(ReasoningInput(
+        intent=_intent("REPORT", nl_context="prioritize anything moving"),
+        detections=[], frame_jpeg=None,
+    )))
+    user = client.chat_calls[0][1]
+    text = user["content"] if isinstance(user["content"], str) else user["content"][0]["text"]
+    assert "prioritize anything moving" in text
+
+
+# ── Output parser handles the doctrine §8 format ─────────────────────────
+
+def test_parser_extracts_cmd_reply_rationale() -> None:
+    client = _RecordingClient(reply=(
+        "CMD: GOTO location=\"Alcatraz\" altitude=400\n"
+        "REPLY: WILCO\n"
+        "RATIONALE: Transit to Alcatraz at 400 ft AGL."
+    ))
+    r = Reasoner(backend="llama_cpp_server", client=client)
+    out = _run(r.step(ReasoningInput(intent=_intent("GOTO", destination="Alcatraz"), detections=[], frame_jpeg=None)))
+    assert out.action["cmds"] == ["GOTO location=\"Alcatraz\" altitude=400"]
+    assert out.action["reply"] == "WILCO"
+    assert "WILCO" in out.decision
+    assert "GOTO" in out.decision
+    assert "400 ft AGL" in out.rationale
+
+
+def test_parser_handles_unable_with_no_cmd() -> None:
+    client = _RecordingClient(reply=(
+        "REPLY: UNABLE reason=\"target ambiguous, specify coordinates\"\n"
+        "RATIONALE: Cannot resolve the named landmark from current context."
+    ))
+    r = Reasoner(backend="llama_cpp_server", client=client)
+    out = _run(r.step(ReasoningInput(intent=_intent("GOTO", destination="???"), detections=[], frame_jpeg=None)))
+    assert out.action["cmds"] == []
+    assert "UNABLE" in out.action["reply"]
+    assert out.decision.startswith("UNABLE")
+
+
+def test_parser_extracts_mavlink_for_motion_verb() -> None:
+    """For GOTO/CLIMB/etc. the doctrine produces a MAVLINK: line — parsed separately
+    and appended to the displayed rationale, with the raw JSON in action['mavlink']."""
+    client = _RecordingClient(reply=(
+        "CMD: GOTO location=\"Alcatraz\" altitude=400\n"
+        "REPLY: WILCO\n"
+        "RATIONALE: Transit north-west to Alcatraz Island and climb to 400 ft AGL on arrival. Route is clear of restricted operating zones.\n"
+        "MAVLINK: {\"cmd\":\"MAV_CMD_NAV_WAYPOINT\",\"params\":{\"lat\":37.8270,\"lon\":-122.4230,\"alt_m\":122}}"
+    ))
+    r = Reasoner(backend="llama_cpp_server", client=client)
+    out = _run(r.step(ReasoningInput(intent=_intent("GOTO", destination="Alcatraz"), detections=[], frame_jpeg=None)))
+    assert out.action["cmds"] == ["GOTO location=\"Alcatraz\" altitude=400"]
+    assert out.action["reply"] == "WILCO"
+    assert out.action["mavlink"] is not None
+    assert "MAV_CMD_NAV_WAYPOINT" in out.action["mavlink"]
+    # Display rationale combines prose + MAVLink block (formatted with header).
+    assert "Transit north-west" in out.rationale
+    assert "MAV_CMD_NAV_WAYPOINT" in out.rationale
+    assert "📡 MAVLINK" in out.rationale
+
+
+def test_parser_no_mavlink_for_vision_verb() -> None:
+    """SEARCH/REPORT/etc. should not produce a MAVLink block."""
+    client = _RecordingClient(reply=(
+        "REPLY: ROGER\n"
+        "RATIONALE: Camera shows an indoor desk with a laptop and coffee cup. No vessels visible."
+    ))
+    r = Reasoner(backend="llama_cpp_server", client=client)
+    out = _run(r.step(ReasoningInput(intent=_intent("REPORT"), detections=[], frame_jpeg=None)))
+    assert out.action["mavlink"] is None
+    assert "📡 MAVLINK" not in out.rationale
+
+
+def test_parser_falls_back_when_format_drifts() -> None:
+    client = _RecordingClient(reply="acknowledged the order\nwill comply with the search task")
+    r = Reasoner(backend="llama_cpp_server", client=client)
+    out = _run(r.step(ReasoningInput(intent=_intent("SEARCH", target="boats"), detections=[], frame_jpeg=None)))
+    # No structured CMD/REPLY but we still produce a non-empty decision/rationale.
+    assert out.decision
+    assert out.rationale
+
+
+# ── Frame attachment ──────────────────────────────────────────────────────
+
+def test_frame_attached_when_available() -> None:
+    """When FrameStore has a frame, it's attached to the user message as image_url."""
+    client = _RecordingClient()
+    store = _StubFrameStore(jpeg=b"FAKEJPEGDATA")
+    r = Reasoner(backend="llama_cpp_server", client=client, frame_store=store)  # type: ignore[arg-type]
+    _run(r.step(ReasoningInput(intent=_intent("REPORT"), detections=[], frame_jpeg=None)))
+    user = client.chat_calls[0][1]
+    assert isinstance(user["content"], list)
+    image_part = next(p for p in user["content"] if p.get("type") == "image_url")
+    assert "data:image/jpeg;base64," in image_part["image_url"]["url"]
+
+
+def test_no_frame_means_text_only_user_content() -> None:
+    """Without a frame, user message content is a plain string."""
+    client = _RecordingClient()
+    r = Reasoner(backend="llama_cpp_server", client=client)
+    _run(r.step(ReasoningInput(intent=_intent("ABORT"), detections=[], frame_jpeg=None)))
+    user = client.chat_calls[0][1]
+    assert isinstance(user["content"], str)

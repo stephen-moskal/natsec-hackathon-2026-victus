@@ -122,7 +122,10 @@ async def _http_server(store: FrameStore) -> None:
         finally:
             writer.close()
 
-    server = await asyncio.start_server(handle_client, "0.0.0.0", FRAME_SERVER_PORT)
+    # Dual-stack: listen on both IPv4 (USB-C 192.168.55.1) and IPv6 link-local
+    # (so the Mac can reach a specific Jetson via fe80::1%enX when multiple
+    # Jetsons are tethered and both claim 192.168.55.1).
+    server = await asyncio.start_server(handle_client, ["0.0.0.0", "::"], FRAME_SERVER_PORT)
     log.info("frame_http_server_started", port=FRAME_SERVER_PORT)
     async with server:
         await server.serve_forever()

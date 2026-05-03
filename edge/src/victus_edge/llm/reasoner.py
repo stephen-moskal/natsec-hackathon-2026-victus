@@ -1,25 +1,18 @@
-"""On-board reasoning model.
+"""On-board reasoning model — doctrine-driven, mission-aware.
 
-Dispatches every operator command to a verb-appropriate path:
+The model's system prompt is `shared/protocol/prompts/doctrine.system.md`
+with the active mission's `system_prompt` injected between the
+`<MISSION_OVERLAY>` markers (§7 of the doctrine). The user message is the
+operator's command rendered in plain English. The model reply follows the
+doctrine §8 output contract:
 
-  * **VISION verbs** (REPORT/SEARCH/OBSERVE/TRACK/IDENTIFY) — pull the latest
-    webcam frame from the shared FrameStore and call the multimodal LLM with
-    a verb-specific prompt. The LLM produces a tactical description of what
-    it actually sees relevant to the command.
+    CMD: <KEYWORD> key=value ...
+    REPLY: <RESPONSE_KEYWORD> [reason="..."]
+    RATIONALE: <one sentence>
 
-  * **MOTION verbs** (GOTO/ALTITUDE/LOITER) — text-only call. The LLM emits a
-    MAVLink-style structured JSON payload in the rationale that downstream
-    autonomy code (or a human reviewer) can act on.
-
-  * **SAFETY verbs** (ABORT/RTB) — short text-only acknowledgment.
-
-  * **ASSIGN_MISSION** — captures the new mission into `MissionState` so
-    every subsequent command's prompt includes the mission's system prompt
-    as context. The reasoner still produces a confirmation reasoning step
-    for visibility in the UI.
-
-The mock backend (used in tests / no-LLM mode) returns deterministic
-responses so the rest of the pipeline can be tested without llama-server.
+Per doctrine §2 ("You see one camera frame per reasoning step") we attach
+the latest webcam frame to every multimodal-capable call. When no frame is
+available we fall back to text-only with a note.
 """
 
 from dataclasses import dataclass
@@ -27,22 +20,15 @@ import json
 import re
 from typing import Any
 
+from .doctrine import compose_system_prompt
 from .http_client import LlamaCppClient
 from .mission_state import MissionState
 
-# Late imports to avoid a hard dependency on the vision module when the
-# reasoner is constructed without a frame store (unit tests, mock backend).
+# Late/optional import so unit tests can construct a Reasoner without OpenCV.
 try:
     from ..vision.frame_server import FrameStore
 except Exception:  # noqa: BLE001
     FrameStore = None  # type: ignore[assignment, misc]
-
-
-# ── Verb categories ───────────────────────────────────────────────────────
-
-_VISION_VERBS = frozenset({"REPORT", "SEARCH", "OBSERVE", "TRACK", "IDENTIFY"})
-_MOTION_VERBS = frozenset({"GOTO", "ALTITUDE", "LOITER"})
-_SAFETY_VERBS = frozenset({"ABORT", "RTB"})
 
 
 # ── Data classes ──────────────────────────────────────────────────────────
@@ -51,112 +37,162 @@ _SAFETY_VERBS = frozenset({"ABORT", "RTB"})
 class ReasoningInput:
     intent: dict           # current command payload (verb, params, priority, …)
     detections: list[dict] # recent vision detections (unused for now)
-    frame_jpeg: bytes | None  # optional override; if None the reasoner pulls from FrameStore
+    frame_jpeg: bytes | None  # optional override; if None we try the FrameStore
 
 
 @dataclass
 class ReasoningOutput:
-    action: dict           # autonomy-controller action (mostly noop today)
-    decision: str          # short label
-    rationale: str         # full natural-language explanation, <= 500 chars on the wire
+    action: dict           # parsed CMD lines as a list under action["cmds"]
+    decision: str          # short label combining REPLY + first CMD
+    rationale: str         # the doctrine RATIONALE line, ≤ 500 chars on the wire
     tokens: int
 
 
-# ── Prompt templates ──────────────────────────────────────────────────────
+# ── User-prompt phrasing ──────────────────────────────────────────────────
+# We render the wire-protocol command as plain-English tasking the doctrine
+# model is trained to receive. The mapping below converts between the
+# wire-protocol verb names (drone_command_policy.json) and the doctrine
+# vocabulary (§3) where they differ — most overlap one-to-one, ALTITUDE
+# splits into CLIMB/DESCEND, GOTO uses `location` instead of `destination`.
 
-_BASE_HEADER = (
-    "You are the on-board tactical reasoner for an autonomous UAV.\n"
-    "{mission_block}"
-    "Operator natural-language intent: {nl_context}\n"
-    "Current command: {verb} with structured params: {structured_params}\n"
+def _natural_language_task(intent: dict) -> str:
+    verb = (intent or {}).get("verb", "")
+    params = (intent or {}).get("params") or {}
+    if not isinstance(params, dict):
+        params = {}
+    nl = str(params.get("nl_context") or "").strip()
+    structured = {k: v for k, v in params.items() if k != "nl_context"}
+
+    # Natural-language verb phrasing
+    phrase: str
+    if verb == "ABORT":
+        phrase = "Abort the current task and enter a safe holding state."
+    elif verb == "RTB":
+        phrase = "Return to base."
+    elif verb == "GOTO":
+        dest = structured.get("destination") or structured.get("location") or "(unspecified)"
+        alt = structured.get("altitude")
+        phrase = f"Go to {dest}." + (f" Climb to {alt} ft AGL on arrival." if alt else "")
+    elif verb == "ALTITUDE":
+        direction = (structured.get("direction") or "").upper()
+        alt = structured.get("altitude")
+        if direction == "CLIMB":
+            phrase = f"Climb to {alt} ft AGL." if alt else "Climb."
+        elif direction == "DESCEND":
+            phrase = f"Descend to {alt} ft AGL." if alt else "Descend."
+        else:
+            phrase = f"Change altitude to {alt} ft AGL." if alt else "Change altitude."
+    elif verb == "LOITER":
+        loc = structured.get("location") or "current position"
+        dur = structured.get("duration") or "PT10M"
+        phrase = f"Loiter at {loc} for {dur}."
+    elif verb == "SEARCH":
+        area = structured.get("area") or "(unspecified area)"
+        target = structured.get("target") or "(unspecified target)"
+        pattern = structured.get("pattern") or "parallel sweep"
+        phrase = f"Search {area} for {target} using a {pattern}."
+    elif verb == "OBSERVE":
+        target = structured.get("target") or "(unspecified target)"
+        mode = structured.get("mode") or "static"
+        dur = structured.get("duration") or "PT30M"
+        interval = structured.get("reportInterval") or "PT60S"
+        phrase = f"Observe {target} in {mode} mode for {dur}, reporting every {interval}."
+    elif verb == "REPORT":
+        subject = structured.get("subject") or "the current scene"
+        interval = structured.get("interval")
+        phrase = (
+            f"Report a SITREP on {subject}."
+            + (f" Repeat every {interval}." if interval else "")
+        )
+    elif verb == "TRACK":
+        target = structured.get("target") or "(unspecified target)"
+        standoff = structured.get("standOffMeters")
+        phrase = f"Track {target}." + (f" Maintain {standoff} m stand-off." if standoff else "")
+    elif verb == "IDENTIFY":
+        target = structured.get("target") or "(unspecified target)"
+        phrase = f"Identify the {target}."
+    elif verb == "ASSIGN_MISSION":
+        # The mission overlay was already updated before this call; the
+        # doctrine system prompt now carries the new mission. We just need
+        # the model to acknowledge.
+        name = structured.get("name") or "(unnamed)"
+        phrase = (
+            f"Operator has installed mission overlay \"{name}\". "
+            "The mission's system_prompt is now in effect. Acknowledge with WILCO "
+            "and a one-sentence rationale describing your understanding of the mission."
+        )
+    else:
+        phrase = f"Operator command: {verb} with parameters {json.dumps(structured, separators=(',', ':'))}."
+
+    if nl:
+        phrase += f" Operator clarification: \"{nl}\""
+    return phrase
+
+
+# ── Output parser (doctrine §8) ───────────────────────────────────────────
+
+_CMD_RE = re.compile(r"^\s*CMD:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
+_REPLY_RE = re.compile(r"^\s*REPLY:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
+# RATIONALE captures from `RATIONALE:` up to (but not including) the next
+# MAVLINK: line, or end-of-text. Non-greedy + lookahead ensures we don't
+# pull MAVLINK content into the rationale prose.
+_RATIONALE_RE = re.compile(
+    r"^\s*RATIONALE:\s*(.+?)(?=\n\s*MAVLINK:|\Z)",
+    re.MULTILINE | re.IGNORECASE | re.DOTALL,
+)
+_MAVLINK_RE = re.compile(
+    r"^\s*MAVLINK:\s*(.+?)\s*$",
+    re.MULTILINE | re.IGNORECASE | re.DOTALL,
 )
 
-_VISION_TAIL = (
-    "The image attached is the live view from the drone's camera right now. "
-    "Describe what you see in the frame relevant to this command.\n\n"
-    "Respond in EXACTLY this format, nothing else:\n"
-    "DECISION: <one short imperative line, ~10 words>\n"
-    "RATIONALE: <2-3 sentences describing the visual scene and how it relates to the command>"
-)
 
-_MOTION_TAIL = (
-    "Produce the MAVLink-style command that satisfies this verb. "
-    "Use realistic lat/lon if a destination/landmark is named (approximate from your knowledge). "
-    "Output a single JSON object with keys appropriate for the verb (e.g. mavlink_cmd, lat, lon, alt_m, "
-    "altitude_change_ft, direction, duration_s, bearing_deg).\n\n"
-    "Respond in EXACTLY this format, nothing else:\n"
-    "DECISION: <one short imperative line>\n"
-    "RATIONALE: ```json\n<the json object>\n```\nThen ONE sentence justifying the choice."
-)
+def _parse_doctrine_reply(text: str) -> tuple[list[str], str, str, str | None]:
+    """Return (cmd_lines, reply_line, display_rationale, mavlink_json).
 
-_SAFETY_TAIL = (
-    "Confirm the safe action you will take. The operator wants you to halt or return.\n\n"
-    "Respond in EXACTLY this format:\n"
-    "DECISION: <one short imperative>\n"
-    "RATIONALE: <one sentence describing the action and its safety implication>"
-)
-
-_MISSION_ACCEPT_TAIL = (
-    "You are accepting a new mission. In one short paragraph confirm you understand "
-    "the mission and how you will approach it.\n\n"
-    "Respond in EXACTLY this format:\n"
-    "DECISION: <one short line summarizing the mission>\n"
-    "RATIONALE: <2-3 sentences on how you'll execute the mission's intent>"
-)
-
-_NO_FRAME_NOTE = (
-    "\n[No live camera frame is available right now — reason about the command "
-    "without visual evidence; note in your rationale that no view was available.]"
-)
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────
-
-def _build_header(verb: str, intent: dict, mission_state: MissionState | None) -> str:
-    params = intent.get("params") or {}
-    nl_context = ""
-    structured = {}
-    if isinstance(params, dict):
-        nl_context = str(params.get("nl_context") or "(none)")
-        structured = {k: v for k, v in params.items() if k != "nl_context"}
-
-    mission_block = ""
-    if mission_state is not None and mission_state.current is not None:
-        mission_block = mission_state.context_block() + "\n"
-
-    return _BASE_HEADER.format(
-        mission_block=mission_block,
-        nl_context=nl_context,
-        verb=verb,
-        structured_params=json.dumps(structured, separators=(",", ":")),
-    )
-
-
-_DECISION_RE = re.compile(r"DECISION:\s*(.+?)(?:\n|$)", re.IGNORECASE)
-_RATIONALE_RE = re.compile(r"RATIONALE:\s*(.+)", re.IGNORECASE | re.DOTALL)
-
-
-def _parse_decision_rationale(text: str) -> tuple[str, str]:
-    """Extract DECISION + RATIONALE lines. Falls back to first/rest split."""
-    text = text.strip()
-    decision_m = _DECISION_RE.search(text)
+    `display_rationale` is the prose RATIONALE with the MAVLINK block appended
+    (formatted nicely) so the UI panel shows both pieces in one block.
+    `mavlink_json` is the raw MAVLink JSON string (or None).
+    """
+    text = (text or "").strip()
+    cmds = [m.group(1).strip() for m in _CMD_RE.finditer(text)]
+    reply_m = _REPLY_RE.search(text)
     rationale_m = _RATIONALE_RE.search(text)
-    if decision_m and rationale_m:
-        return decision_m.group(1).strip()[:120], rationale_m.group(1).strip()[:500]
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if not lines:
-        return "(no decision)", "(empty model response)"
-    return lines[0][:120], (" ".join(lines[1:]) or text)[:500]
+    mavlink_m = _MAVLINK_RE.search(text)
+
+    reply = reply_m.group(1).strip() if reply_m else ""
+    rationale = (rationale_m.group(1).strip() if rationale_m else text).strip()
+    mavlink = mavlink_m.group(1).strip() if mavlink_m else None
+
+    # Fallback: no structured fields found at all → use first/rest split.
+    if not reply and not rationale_m:
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if lines:
+            reply = lines[0]
+            rationale = " ".join(lines[1:]) or text
+
+    # Compose the display rationale (prose + nicely formatted MAVLink).
+    display = rationale
+    if mavlink:
+        display = f"{rationale}\n\n📡 MAVLINK\n{mavlink}"
+    return cmds, reply, display[:800], mavlink
+
+
+def _decision_label(cmds: list[str], reply: str) -> str:
+    """Compose a short decision label for the dashboard."""
+    if cmds and reply:
+        return f"{reply} · {cmds[0]}"[:160]
+    return (cmds[0] if cmds else reply or "(no decision)")[:160]
 
 
 # ── Reasoner ──────────────────────────────────────────────────────────────
 
 class Reasoner:
-    """Backend-agnostic, verb-aware reasoner.
+    """Doctrine-driven, mission-aware reasoner.
 
-    `client` is required for the `llama_cpp_server` backend and ignored by
-    `mock`. `frame_store` and `mission_state` are optional — when absent the
-    vision path falls back to text-only and mission context is empty.
+    The doctrine is the system prompt. Mission overlay is injected per call
+    via the shared MissionState. The user message is the operator's command
+    rendered as plain English. We attach the latest webcam frame when one is
+    available so vision-grounded reasoning works for any verb (per doctrine §2).
     """
 
     def __init__(
@@ -187,8 +223,8 @@ class Reasoner:
 
     def _mock_step(self, verb: str) -> ReasoningOutput:
         return ReasoningOutput(
-            action={"do": "noop"},
-            decision=f"mock-{verb.lower() or 'noop'}",
+            action={"cmds": [], "verb": verb},
+            decision=f"WILCO · mock-{verb.lower() or 'noop'}",
             rationale=f"mock backend received verb={verb}",
             tokens=0,
         )
@@ -197,56 +233,56 @@ class Reasoner:
 
     async def _llama_step(self, verb: str, inputs: ReasoningInput) -> ReasoningOutput:
         assert self.client is not None
-        header = _build_header(verb, inputs.intent or {}, self.mission_state)
+        system_prompt = compose_system_prompt(self.mission_state)
+        user_text = _natural_language_task(inputs.intent or {})
 
-        if verb == "ASSIGN_MISSION":
-            # Mission state was updated by the caller before step(). Build the
-            # confirmation prompt from the now-current mission.
-            return await self._chat_with(verb, header + _MISSION_ACCEPT_TAIL)
+        # Try to attach a frame — doctrine §2 says every step sees one frame.
+        jpeg = inputs.frame_jpeg
+        if jpeg is None and self.frame_store is not None:
+            jpeg = self.frame_store.get()
 
-        if verb in _VISION_VERBS:
-            jpeg = inputs.frame_jpeg
-            if jpeg is None and self.frame_store is not None:
-                jpeg = self.frame_store.get()
-            if jpeg is None:
-                # No frame available — fall back to text-only path with a note.
-                return await self._chat_with(verb, header + _VISION_TAIL + _NO_FRAME_NOTE)
-            return await self._describe_with(verb, header + _VISION_TAIL, jpeg)
+        if jpeg is not None:
+            text = await self._describe_with(system_prompt, user_text, jpeg)
+        else:
+            text = await self._chat_with(system_prompt, user_text)
 
-        if verb in _MOTION_VERBS:
-            return await self._chat_with(verb, header + _MOTION_TAIL)
+        cmds, reply, rationale, mavlink = _parse_doctrine_reply(text)
+        return ReasoningOutput(
+            action={"cmds": cmds, "verb": verb, "reply": reply, "mavlink": mavlink},
+            decision=_decision_label(cmds, reply),
+            rationale=rationale,
+            tokens=len(text.split()),
+        )
 
-        if verb in _SAFETY_VERBS:
-            return await self._chat_with(verb, header + _SAFETY_TAIL)
-
-        # Unknown verb — give the LLM a generic prompt so we still get a trace.
-        return await self._chat_with(verb, header + _SAFETY_TAIL)
-
-    async def _chat_with(self, verb: str, user_prompt: str) -> ReasoningOutput:
+    async def _chat_with(self, system_prompt: str, user_text: str) -> str:
         assert self.client is not None
-        text = await self.client.chat_completion(
+        return await self.client.chat_completion(
             [
-                {"role": "system", "content": "You are an on-board tactical UAV reasoner. Follow the user's required output format exactly."},
-                {"role": "user", "content": user_prompt},
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text},
             ],
-            max_tokens=300,
+            max_tokens=400,
             temperature=0.2,
         )
-        decision, rationale = _parse_decision_rationale(text)
-        return ReasoningOutput(
-            action={"do": "noop", "verb": verb},
-            decision=decision,
-            rationale=rationale,
-            tokens=len(text.split()),
-        )
 
-    async def _describe_with(self, verb: str, prompt: str, jpeg: bytes) -> ReasoningOutput:
+    async def _describe_with(self, system_prompt: str, user_text: str, jpeg: bytes) -> str:
+        """Multimodal call — system prompt + text task + camera frame."""
+        import base64
         assert self.client is not None
-        text = await self.client.describe_frame(jpeg, prompt=prompt, max_tokens=300, temperature=0.2)
-        decision, rationale = _parse_decision_rationale(text)
-        return ReasoningOutput(
-            action={"do": "noop", "verb": verb},
-            decision=decision,
-            rationale=rationale,
-            tokens=len(text.split()),
+        b64 = base64.b64encode(jpeg).decode("ascii")
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_text},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                    },
+                ],
+            },
+        ]
+        return await self.client.chat_completion(
+            messages, max_tokens=400, temperature=0.2,
         )
