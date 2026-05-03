@@ -52,9 +52,9 @@ app.use(express.json({ limit: "1mb" }));
 function mockDrones(): Drone[] {
   const nowIso = new Date().toISOString();
   return [
-    { drone_id: "uav-01", callsign: "ALPHA", protocol_version: "0.2.0", last_seen_at: nowIso, lat: 42.3601, lon: -71.0589, alt_m: 100, heading_deg: 90, speed_mps: 0, battery_pct: 95, state: "NOMINAL", current_mission_id: "none", link_status: "ONLINE" },
-    { drone_id: "uav-02", callsign: "BRAVO", protocol_version: "0.2.0", last_seen_at: nowIso, lat: 42.3651, lon: -71.0552, alt_m: 120, heading_deg: 180, speed_mps: 0, battery_pct: 88, state: "NOMINAL", current_mission_id: "none", link_status: "ONLINE" },
-    { drone_id: "uav-03", callsign: "CHARLIE", protocol_version: "0.2.0", last_seen_at: nowIso, lat: 42.3550, lon: -71.0633, alt_m: 110, heading_deg: 270, speed_mps: 0, battery_pct: 72, state: "NOMINAL", current_mission_id: "none", link_status: "ONLINE" },
+    { drone_id: "uav-01", callsign: "ALPHA", protocol_version: "0.2.0", last_seen_at: nowIso, lat: 37.7955, lon: -122.3937, alt_m: 100, heading_deg: 90, speed_mps: 0, battery_pct: 95, state: "NOMINAL", current_mission_id: "none", link_status: "ONLINE" },
+    { drone_id: "uav-02", callsign: "BRAVO", protocol_version: "0.2.0", last_seen_at: nowIso, lat: 37.7749, lon: -122.4194, alt_m: 120, heading_deg: 180, speed_mps: 0, battery_pct: 88, state: "NOMINAL", current_mission_id: "none", link_status: "ONLINE" },
+    { drone_id: "uav-03", callsign: "CHARLIE", protocol_version: "0.2.0", last_seen_at: nowIso, lat: 37.7614, lon: -122.4862, alt_m: 110, heading_deg: 270, speed_mps: 0, battery_pct: 72, state: "NOMINAL", current_mission_id: "none", link_status: "ONLINE" },
   ];
 }
 
