@@ -2,9 +2,11 @@
 
 Tiny Express server. Owns the Foundry token (env var, never touches the browser). Fronts a stable REST surface for the [UI](../ui/) so the UI stays Foundry-agnostic.
 
+**Status: live against real Foundry.** All Phase 1–3 endpoints proven end-to-end.
+
 ## Why it exists
 
-Browser-direct calls to Foundry hit CORS. Putting the Foundry token in `localStorage` leaks it. A Vite dev proxy works in `npm run dev` but dies in `npm run build && vite preview`. The BFF kills all three problems with ~150 LOC:
+Browser-direct calls to Foundry hit CORS. Putting the Foundry token in `localStorage` leaks it. A Vite dev proxy works in `npm run dev` but dies in `npm run build && vite preview`. The BFF kills all three problems in ~250 LOC:
 
 - CORS allowlist controlled by `ALLOWED_ORIGIN` env var
 - Foundry bearer token only ever in `process.env.FOUNDRY_TOKEN` — server-side
@@ -13,25 +15,35 @@ Browser-direct calls to Foundry hit CORS. Putting the Foundry token in `localSto
 ## Quick start
 
 ```bash
-cp .env.example .env       # MOCK_MODE=true is fine for Phase 0
+cp .env.example .env       # set FOUNDRY_TOKEN, MOCK_MODE=false
 npm install
 npm run dev                # tsx watch on src/index.ts; http://localhost:8787
 ```
 
-Smoke test: `curl http://localhost:8787/api/health` → `{"reachable":false,...}` in mock mode.
+Smoke test: `curl http://localhost:8787/api/health` → `{"reachable":true,"token_valid_until_iso":"…","seconds_remaining":…}` against real Foundry.
 
 ## Endpoints
 
-| Method | Path | Purpose | Phase |
+| Method | Path | Purpose | Status |
 |---|---|---|---|
-| GET | `/api/health` | Foundry reachability + token expiry from JWT `exp` claim | Phase 0 (mock) → Phase 1 (real) |
-| GET | `/api/drones` | Search Objects on `drone` | Phase 0 (mock) → Phase 1 (real) |
-| GET | `/api/commands?deviceId=…&limit=…` | Search Objects on `command` filtered by deviceId | Phase 0 (empty) → Phase 2 (real) |
-| GET | `/api/missions` | Search Objects on `mission` | Phase 0 (empty) → Phase 3 (real) |
-| POST | `/api/issue-command` | Body `{device_ids[], verb, params_json, priority, expires_in_sec}` — fan-out via `Promise.allSettled` | Phase 0 (mock OK) → Phase 2 (real) |
-| POST | `/api/missions` | Create a Mission via `create-mission` action | Phase 3 |
-| POST | `/api/assign-mission` | Body `{mission_id, device_ids[]}` — issues N ASSIGN_MISSION commands | Phase 3 |
-| GET | `/api/telemetry?deviceId=…` | Bundles last_position + last_reasoning + last_frame from Phase 4 ontology objects | Phase 4 |
+| GET | `/api/health` | Foundry reachability + token expiry from JWT `exp` claim | live |
+| GET | `/api/drones` | Search Objects on `drone` | live (returns 3 seed drones) |
+| GET | `/api/commands?deviceId=…&limit=…` | Search Objects on `command` filtered by `deviceId`, sorted by `issuedAt` desc | live |
+| POST | `/api/issue-command` | Body `{device_ids[], verb, params_json, priority, expires_in_sec}` — N fan-out via `Promise.allSettled` against `issue-command` action | live |
+| GET | `/api/missions` | Search Objects on `mission`, sorted by `createdAt` desc | live |
+| POST | `/api/missions` | Body `{name, description, system_prompt, objectives?, target_specs?, area_geo_json?, priority?, roe_profile?}` — generates `mission_id` UUID + timestamps, calls `create-mission` action; 8KB cap on `system_prompt` | live |
+| POST | `/api/assign-mission` | Body `{mission_id, device_ids[], expires_in_sec?}` — fetches the mission, builds a clean params payload (drops `"none"` sentinels), fans out N `issue-command` calls with `verb=ASSIGN_MISSION`, embeds `system_prompt` + name + optional structure in `params_json` | live |
+| GET | `/api/telemetry?deviceId=…` | Bundles last_position + last_reasoning + last_frame from Phase 4 ontology objects | **pending Phase 4** |
+
+## Source layout
+
+```
+bff/src/
+├── index.ts        # Express bootstrap + all 7 route handlers
+├── foundry.ts      # searchObjects() / applyAction() / pingFoundry() / decodeTokenExpiry()
+├── camelcase.ts    # snake↔camel maps for drone, command, mission (matches foundry/README.md table)
+└── types.ts        # wire types between BFF and UI; snake_case to match the protocol envelope
+```
 
 ## Env vars
 
