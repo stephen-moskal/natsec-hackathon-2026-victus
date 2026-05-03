@@ -89,20 +89,37 @@ async def _command_poller(client: FoundryClient, cfg: Config) -> None:
 
 
 async def _telemetry_emitter(client: FoundryClient, cfg: Config) -> None:
+    # Route: SF Ferry Terminal → Alcatraz, ~10 min at 5s emit cadence.
+    _START_LAT, _START_LON = 37.7955, -122.3937   # Ferry Building / Embarcadero
+    _END_LAT,   _END_LON   = 37.8270, -122.4230   # Alcatraz Island
+    _STEPS = 120                                    # steps to complete the route
+    _HEADING = 317.0                                # NW toward Alcatraz
+    _SPEED_MPS = 5.0                                # ~10 knots
+    _BATTERY_START = 95.0
+    _BATTERY_END   = 72.0                           # drain to 72% by the time we arrive
+
+    step = 0
     while True:
+        t = min(step / _STEPS, 1.0)                 # clamp 0..1, hold at Alcatraz after
+        lat = _START_LAT + t * (_END_LAT - _START_LAT)
+        lon = _START_LON + t * (_END_LON - _START_LON)
+        battery = _BATTERY_START + t * (_BATTERY_END - _BATTERY_START)
+        speed = 0.0 if t >= 1.0 else _SPEED_MPS    # stop moving once arrived
+
         envelope = encode_telemetry(
             sender=f"drone-{cfg.drone_id}",
             event="Position",
             fields={
-                "lat": 42.3601,
-                "lon": -71.0589,
+                "lat": round(lat, 6),
+                "lon": round(lon, 6),
                 "alt_m": 100.0,
-                "heading_deg": 90.0,
-                "speed_mps": 0.0,
-                "battery_pct": 95.0,
+                "heading_deg": _HEADING,
+                "speed_mps": speed,
+                "battery_pct": round(battery, 1),
             },
         )
         await client.post_telemetry([envelope])
+        step += 1
         await asyncio.sleep(cfg.position_emit_interval_s)
 
 

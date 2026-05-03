@@ -15,6 +15,7 @@ export default function CommandPalette({ drones }: { drones: Drone[] }) {
   const [verb, setVerb] = useState<Verb>("REPORT");
   const [priority, setPriority] = useState<Priority>("PRIORITY");
   const [paramsJson, setParamsJson] = useState<string>(VERB_PARAMS_SKELETON.REPORT);
+  const [nlContext, setNlContext] = useState<string>("");
   const [expiresInSec, setExpiresInSec] = useState<number>(3600);
   const [sending, setSending] = useState(false);
   const [results, setResults] = useState<IssueCommandResult[] | null>(null);
@@ -58,10 +59,20 @@ export default function CommandPalette({ drones }: { drones: Drone[] }) {
     setError(null);
     setSending(true);
     try {
+      // Merge nl_context into params so the edge LLM dispatcher can use it.
+      let finalParamsJson = paramsJson;
+      if (nlContext.trim()) {
+        try {
+          const parsed = JSON.parse(paramsJson);
+          finalParamsJson = JSON.stringify({ ...parsed, nl_context: nlContext.trim() });
+        } catch {
+          // paramsJson is invalid — let the BFF catch it
+        }
+      }
       const res = await api.issueCommand({
         device_ids: deviceIds,
         verb,
-        params_json: paramsJson,
+        params_json: finalParamsJson,
         priority,
         expires_in_sec: expiresInSec,
       });
@@ -85,6 +96,31 @@ export default function CommandPalette({ drones }: { drones: Drone[] }) {
       <div className="border-t border-gray-800 pt-2 space-y-1">
         <span className="text-[10px] text-gray-500 uppercase tracking-wide">Verb</span>
         <VerbPicker value={verb} onChange={setVerb} />
+      </div>
+
+      <div className="border-t border-gray-800 pt-2 space-y-1">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] text-gray-500 uppercase tracking-wide">Natural Language Context</span>
+          {nlContext && (
+            <button
+              type="button"
+              onClick={() => setNlContext("")}
+              className="text-[10px] text-gray-600 hover:text-gray-400"
+            >
+              clear
+            </button>
+          )}
+        </div>
+        <textarea
+          value={nlContext}
+          onChange={(e) => setNlContext(e.target.value)}
+          rows={3}
+          placeholder={`e.g. "Search the northern harbor for vessels moving toward the bridge, prioritise anything over 20m"`}
+          className="w-full bg-gray-950 border border-gray-700 focus:border-blue-600 rounded px-2 py-1.5 text-[11px] text-gray-100 outline-none resize-y placeholder:text-gray-700 leading-snug"
+        />
+        <p className="text-[10px] text-gray-600">
+          Appended as <span className="font-mono text-gray-500">nl_context</span> in params — gives the on-board LLM your plain-English intent.
+        </p>
       </div>
 
       <div className="border-t border-gray-800 pt-2 grid grid-cols-2 gap-2">
