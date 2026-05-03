@@ -26,13 +26,24 @@ edge/data/
 *.sqlite
 *.jsonl
 
+# Node
+node_modules/
+.env
+
 # Foundry local artifacts
 foundry/transforms-python/build/
 foundry/functions/dist/
 foundry/functions/node_modules/
+
+# Foundry transforms (separate git repo cloned locally)
+foundry-transforms/
 
 # Models (do not commit)
 *.gguf
 *.safetensors
 *.bin
 edge/models/
+
+# Vite cache
+ui/.vite
+bff/.vite
