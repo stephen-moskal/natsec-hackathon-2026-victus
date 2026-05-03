@@ -15,10 +15,12 @@ const VIDEO_REFRESH_MS = 1000; // 1 fps — low bandwidth, still feels live
 
 function VideoFeed({ droneId }: { droneId: string }) {
   const [ts, setTs] = useState(() => Date.now());
-  const [error, setError] = useState(false);
+  const [hasFrame, setHasFrame] = useState(false);
   const timerRef = useRef<number | null>(null);
 
   useEffect(() => {
+    // Tick updates the src; the img stays in the DOM so the browser handles
+    // its own caching and retry — no React unmount/remount flicker.
     timerRef.current = window.setInterval(() => setTs(Date.now()), VIDEO_REFRESH_MS);
     return () => { if (timerRef.current) window.clearInterval(timerRef.current); };
   }, []);
@@ -26,17 +28,20 @@ function VideoFeed({ droneId }: { droneId: string }) {
   const src = `/api/frame/${encodeURIComponent(droneId)}?t=${ts}`;
 
   return (
-    <div className="relative bg-black rounded border border-gray-800 aspect-video overflow-hidden flex items-center justify-center">
-      {error ? (
-        <div className="text-[11px] text-gray-600 font-mono">NO VIDEO · frame server unreachable</div>
-      ) : (
-        <img
-          src={src}
-          alt={`${droneId} camera`}
-          className="w-full h-full object-cover"
-          onLoad={() => setError(false)}
-          onError={() => setError(true)}
-        />
+    <div className="relative bg-black rounded border border-gray-800 aspect-video overflow-hidden">
+      {/* Always in DOM — browser handles retry silently on each tick */}
+      <img
+        src={src}
+        alt={`${droneId} camera`}
+        className={`w-full h-full object-cover transition-opacity duration-300 ${hasFrame ? "opacity-100" : "opacity-0"}`}
+        onLoad={() => setHasFrame(true)}
+        onError={() => setHasFrame(false)}
+      />
+      {/* Overlay shown only when no frame is available */}
+      {!hasFrame && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <span className="text-[11px] text-gray-600 font-mono">NO VIDEO</span>
+        </div>
       )}
     </div>
   );

@@ -49,6 +49,42 @@ export async function searchObjects(
   return json.data ?? [];
 }
 
+// ── Last FrameThumbnail from Foundry cold storage ─────────────────────────
+// Fallback when the Jetson frame server is unreachable. Queries raw_telemetry
+// cold dataset for the most recent FrameThumbnail event for this device,
+// decodes the base64 payload, and returns raw JPEG bytes (or null).
+
+export async function getLastFoundryFrame(
+  cfg: FoundryConfig,
+  deviceId: string,
+  rawTelemetryRid: string,
+): Promise<Buffer | null> {
+  const sender = `drone-${deviceId}`;
+  const sql =
+    `SELECT payload_json FROM \`${rawTelemetryRid}\`` +
+    ` WHERE event = 'FrameThumbnail' AND sender = '${sender}'` +
+    ` ORDER BY issued_at DESC LIMIT 1`;
+  try {
+    const res = await fetch(
+      `${cfg.stackUrl}/api/v2/sqlQueries/execute?preview=true`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.token}` },
+        body: JSON.stringify({ query: sql }),
+      },
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as { rows?: unknown[][] };
+    const raw = data.rows?.[0]?.[0];
+    if (!raw || typeof raw !== "string") return null;
+    const payload = JSON.parse(raw) as { b64?: string };
+    if (!payload.b64) return null;
+    return Buffer.from(payload.b64, "base64");
+  } catch {
+    return null;
+  }
+}
+
 // ── Action Apply ───────────────────────────────────────────────────────────
 
 export async function applyAction(

@@ -430,33 +430,56 @@ app.post("/api/issue-command", async (req: Request, res: Response<IssueCommandRe
 const JETSON_HOST = (process.env.JETSON_HOST ?? "192.168.55.1").replace(/\/$/, "");
 const FRAME_SERVER_PORT = Number(process.env.JETSON_FRAME_PORT ?? 8888);
 
-// Map deviceId → host so multi-drone setups can route to different Jetsons.
+// Only devices listed here have a live frame server. Others return 404 immediately
+// so BRAVO/CHARLIE show "NO VIDEO" rather than serving the wrong camera.
 const DEVICE_HOSTS: Record<string, string> = {
   "uav-01": JETSON_HOST,
 };
 
+// In-memory frame cache — last successfully fetched JPEG per device.
+// When the Jetson is unreachable (USB-C unplugged etc.) we serve the cached
+// frame instantly rather than blocking on a slow Foundry SQL query.
+const frameCache = new Map<string, Buffer>();
+
 app.get("/api/frame/:deviceId", async (req: Request, res: Response) => {
   const deviceId = String(req.params.deviceId);
   const host = DEVICE_HOSTS[deviceId];
+
   if (!host) {
     res.status(404).send("No frame server configured for this device");
     return;
   }
-  const url = `http://${host}:${FRAME_SERVER_PORT}/frame`;
 
+  // Primary: live Jetson frame server (~5ms when USB-C tether is up).
   try {
-    const upstream = await undiciFetch(url, { signal: AbortSignal.timeout(3000) });
-    if (!upstream.ok) {
-      res.status(upstream.status).send("No frame available");
+    const upstream = await undiciFetch(
+      `http://${host}:${FRAME_SERVER_PORT}/frame`,
+      { signal: AbortSignal.timeout(2000) },
+    );
+    if (upstream.ok) {
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      frameCache.set(deviceId, buf);          // keep a hot copy for fallback
+      res.set("Content-Type", "image/jpeg");
+      res.set("Cache-Control", "no-store");
+      res.set("X-Frame-Source", "live");
+      res.send(buf);
       return;
     }
-    const buf = Buffer.from(await upstream.arrayBuffer());
+  } catch {
+    // Jetson unreachable — serve last cached frame immediately.
+  }
+
+  // Fallback: last frame seen this session (in-memory, instant).
+  const cached = frameCache.get(deviceId);
+  if (cached) {
     res.set("Content-Type", "image/jpeg");
     res.set("Cache-Control", "no-store");
-    res.send(buf);
-  } catch {
-    res.status(503).send("Edge frame server unreachable");
+    res.set("X-Frame-Source", "cached");
+    res.send(cached);
+    return;
   }
+
+  res.status(503).send("No frame available");
 });
 
 app.listen(PORT, () => {
