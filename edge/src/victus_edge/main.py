@@ -9,7 +9,8 @@ Single supervisor process for the Jetson container. Owns:
 
 CLI flags switch between modes:
 
-  --model {gemma4|qwen-vl}   pick the GGUF + mmproj paths to launch
+  --model NAME               pick the GGUF + mmproj paths to launch
+                             (gemma4 | gemma4-e2b | qwen-vl | qwen-vl-r)
   --model-path PATH          override model path explicitly
   --mmproj-path PATH         override mmproj path explicitly
   --webcam [N]               open /dev/videoN (default 0 if flag present)
@@ -63,9 +64,17 @@ _MODEL_TABLE: dict[str, tuple[str, str]] = {
         "/opt/models/gemma4/gemma-4-E4B-it-Q4_K_M.gguf",
         "/opt/models/gemma4/mmproj-gemma-4-E4B-it-BF16.gguf",
     ),
+    "gemma4-e2b": (
+        "/opt/models/gemma4/gemma-4-E2B-it-Q4_K_M.gguf",
+        "/opt/models/gemma4/mmproj-gemma-4-E2B-it-BF16.gguf",
+    ),
     "qwen-vl": (
         "/opt/models/qwen3vl/Qwen3VL-2B-Instruct-Q4_K_M.gguf",
         "/opt/models/qwen3vl/mmproj-Qwen3VL-2B-Instruct-F16.gguf",
+    ),
+    "qwen-vl-r": (
+        "/opt/models/qwen3vl/Qwen3VL-2B-Thinking-Q4_K_M.gguf",
+        "/opt/models/qwen3vl/mmproj-Qwen3VL-2B-Thinking-F16.gguf",
     ),
 }
 
@@ -286,8 +295,9 @@ async def _run_test_mode(cfg: Config) -> None:
 
     if cfg.manage_llama_server:
         if not cfg.llm_model_path:
+            choices = "|".join(sorted(_MODEL_TABLE.keys()))
             raise RuntimeError(
-                "no model path resolved — pass --model {gemma4|qwen-vl} or --model-path PATH"
+                f"no model path resolved — pass --model {{{choices}}} or --model-path PATH"
             )
         async with LlamaServer(cfg.llm_model_path, cfg.llm_mmproj_path) as server:
             async with LlamaCppClient(server.base_url, timeout_s=120.0) as client:

@@ -1,12 +1,14 @@
 # docker compose for victus_edge LLM containers on Jetson Orin Nano Super.
 #
-# Both services run llama-server in the background + the victus_edge Python
+# Each service runs llama-server in the background + the victus_edge Python
 # harness in the foreground. Profiles select which model is loaded.
 #
 # Usage (run from project root):
 #   docker compose -f edge/src/victus_edge/llm/model_containers/compose.yaml --profile qwen3vl build
 #   docker compose -f edge/src/victus_edge/llm/model_containers/compose.yaml --profile qwen3vl up
+#   docker compose -f edge/src/victus_edge/llm/model_containers/compose.yaml --profile qwen3vl-thinking up
 #   docker compose -f edge/src/victus_edge/llm/model_containers/compose.yaml --profile gemma4 up
+#   docker compose -f edge/src/victus_edge/llm/model_containers/compose.yaml --profile gemma4-e2b up
 #
 # Only one model can run at a time on the 8 GB Jetson; profile selection
 # enforces that.
@@ -40,6 +42,27 @@ services:
     # Add CLI flags here once the harness supports them.
     command: []
 
+  victus-qwen3vl-thinking:
+    profiles: ["qwen3vl-thinking"]
+    image: victus_edge/qwen3vl-thinking:latest
+    build:
+      context: ../../../../..
+      dockerfile: edge/src/victus_edge/llm/model_containers/qwen3vl_thinking.Dockerfile
+      args:
+        L4T_TAG: r36.4.0
+    runtime: nvidia
+    network_mode: host
+    volumes:
+      - ${VICTUS_MODELS_DIR:-${HOME}/models}:/opt/models:ro
+      - ${VICTUS_TEST_FOOTAGE_DIR:-../../../../test_footage}:/data/test_footage:ro
+      - ${VICTUS_OUTPUT_DIR:-../../../../output}:/data/output
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+      - VICTUS_LLM_MODEL_PATH=/opt/models/qwen3vl/Qwen3VL-2B-Thinking-Q4_K_M.gguf
+      - VICTUS_LLM_MMPROJ_PATH=/opt/models/qwen3vl/mmproj-Qwen3VL-2B-Thinking-F16.gguf
+    command: []
+
   victus-gemma4:
     profiles: ["gemma4"]
     image: victus_edge/gemma4:latest
@@ -59,4 +82,25 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
       - VICTUS_LLM_MODEL_PATH=/opt/models/gemma4/gemma-4-E4B-it-Q4_K_M.gguf
       - VICTUS_LLM_MMPROJ_PATH=/opt/models/gemma4/mmproj-gemma-4-E4B-it-BF16.gguf
+    command: []
+
+  victus-gemma4-e2b:
+    profiles: ["gemma4-e2b"]
+    image: victus_edge/gemma4-e2b:latest
+    build:
+      context: ../../../../..
+      dockerfile: edge/src/victus_edge/llm/model_containers/gemma4_e2b.Dockerfile
+      args:
+        L4T_TAG: r36.4.0
+    runtime: nvidia
+    network_mode: host
+    volumes:
+      - ${VICTUS_MODELS_DIR:-${HOME}/models}:/opt/models:ro
+      - ${VICTUS_TEST_FOOTAGE_DIR:-../../../../test_footage}:/data/test_footage:ro
+      - ${VICTUS_OUTPUT_DIR:-../../../../output}:/data/output
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+      - VICTUS_LLM_MODEL_PATH=/opt/models/gemma4/gemma-4-E2B-it-Q4_K_M.gguf
+      - VICTUS_LLM_MMPROJ_PATH=/opt/models/gemma4/mmproj-gemma-4-E2B-it-BF16.gguf
     command: []
