@@ -1,0 +1,225 @@
+{
+  "meta": {
+    "version": "0.2.0",
+    "description": "Command policy for a webcam-equipped virtual drone running on a Jetson edge runtime; defines the plain-English vocabulary, structured output, and brevity speech contract.",
+    "target": "Jetson edge runtime, webcam-equipped virtual drone",
+    "inputFormat": "plain English natural language",
+    "outputFormat": "structured JSON command + brevity speech"
+  },
+  "commands": [
+    {
+      "priority": 1,
+      "keyword": "ABORT",
+      "parameters": [],
+      "description": "Halt the current task immediately and return the drone to a safe holding state.",
+      "naturalLanguageExamples": ["Abort.", "Stop, abort the mission.", "Knock it off."],
+      "executionRules": ["never blocked", "executes without link", "supersedes any active command", "no operator acknowledgment required"]
+    },
+    {
+      "priority": 2,
+      "keyword": "RTB",
+      "parameters": [],
+      "description": "Return to base or launch point; cancels any active task.",
+      "naturalLanguageExamples": ["Come home.", "Return to base.", "RTB now."],
+      "executionRules": ["never blocked", "executes without link", "cancels active task"]
+    },
+    {
+      "priority": 3,
+      "keyword": "GOTO",
+      "parameters": [
+        {"name": "location", "type": "location", "required": true, "description": "Target waypoint as lat/lon, MGRS, or named landmark"},
+        {"name": "altitude", "type": "altitude", "required": false, "description": "Optional cruise altitude in feet AGL; defaults to current altitude"}
+      ],
+      "description": "Fly to the specified location.",
+      "naturalLanguageExamples": ["Go to the lighthouse.", "Fly to grid 38SMB1234.", "Move to lat 33.5 lon -106.4."],
+      "executionRules": ["queued behind ABORT and RTB", "requires nav confidence at or above 0.4", "respects active restricted operating zones"]
+    },
+    {
+      "priority": 4,
+      "keyword": "CLIMB",
+      "parameters": [
+        {"name": "altitude", "type": "altitude", "required": true, "description": "Target altitude in feet AGL"}
+      ],
+      "description": "Climb to the specified altitude AGL.",
+      "naturalLanguageExamples": ["Climb to 400 feet.", "Get up to angels four.", "Take it up to 500."],
+      "executionRules": ["respects ceiling of active ROZ", "default unit feet AGL"]
+    },
+    {
+      "priority": 4,
+      "keyword": "DESCEND",
+      "parameters": [
+        {"name": "altitude", "type": "altitude", "required": true, "description": "Target altitude in feet AGL"}
+      ],
+      "description": "Descend to the specified altitude AGL.",
+      "naturalLanguageExamples": ["Descend to 200 AGL.", "Drop down to 150.", "Come down to 300 feet."],
+      "executionRules": ["respects floor of active ROZ", "default unit feet AGL"]
+    },
+    {
+      "priority": 5,
+      "keyword": "LOITER",
+      "parameters": [
+        {"name": "location", "type": "location", "required": false, "description": "Loiter point; defaults to current position"},
+        {"name": "duration", "type": "duration", "required": true, "description": "Loiter duration as ISO 8601 duration"}
+      ],
+      "description": "Hold position over the specified location for the given duration.",
+      "naturalLanguageExamples": ["Hold here for 10 minutes.", "Loiter over the bridge for half an hour.", "Stand by overhead for five minutes."],
+      "executionRules": ["camera continues SITREP cadence", "BINGO fuel check before committing"]
+    },
+    {
+      "priority": 6,
+      "keyword": "SEARCH",
+      "parameters": [
+        {"name": "area", "type": "location", "required": true, "description": "Search area or polygon"},
+        {"name": "target", "type": "string", "required": true, "description": "Plain-English description of what to find"},
+        {"name": "pattern", "type": "string", "required": false, "description": "Search pattern; defaults to parallel sweep"}
+      ],
+      "description": "Sweep an area looking for objects matching a plain-English description.",
+      "naturalLanguageExamples": ["Search the harbor for small boats.", "Sweep the field for vehicles.", "Look for any people in the parking lot."],
+      "executionRules": ["fires CONTACT report on each match above confidence 0.6", "VLM grounds every match against the current webcam frame"]
+    },
+    {
+      "priority": 7,
+      "keyword": "OBSERVE",
+      "parameters": [
+        {"name": "target", "type": "string", "required": true, "description": "Target or area description"},
+        {"name": "mode", "type": "string", "required": false, "description": "Observation mode shaping cadence and event thresholds. Recommended values: pattern_of_life (delta-detection cadence, event-on-change), change_detection (event-driven from baseline), static (steady-state SITREP). Default: static."},
+        {"name": "duration", "type": "duration", "required": false, "description": "Observation duration; default 30 minutes"},
+        {"name": "reportInterval", "type": "duration", "required": false, "description": "SITREP cadence; default 60 seconds"}
+      ],
+      "description": "Watch a target or area; report movement and changes per the chosen mode.",
+      "naturalLanguageExamples": ["Watch that pier for 10 minutes.", "Observe the warehouse, tell me when something changes.", "Pattern of life on the dock."],
+      "executionRules": ["periodic SITREP with scene description", "delta detection triggers OBSERVATION report", "mode selects between pattern_of_life, change_detection, static"]
+    },
+    {
+      "priority": 8,
+      "keyword": "REPORT",
+      "parameters": [
+        {"name": "subject", "type": "string", "required": false, "description": "What to report on; defaults to current scene"},
+        {"name": "interval", "type": "duration", "required": false, "description": "Periodic cadence; one-shot if absent"}
+      ],
+      "description": "Generate a SITREP on demand or on a periodic cadence about a specified subject.",
+      "naturalLanguageExamples": ["What do you see?", "Give me a SITREP every 5 minutes.", "Status please."],
+      "executionRules": ["always includes scene description", "embeds current linkState"]
+    },
+    {
+      "priority": 9,
+      "keyword": "TRACK",
+      "parameters": [
+        {"name": "target", "type": "string", "required": true, "description": "Target description in plain English"},
+        {"name": "standOffMeters", "type": "number", "required": false, "description": "Stand-off distance in meters"}
+      ],
+      "description": "Follow a moving target while maintaining visual contact.",
+      "naturalLanguageExamples": ["Track that truck.", "Follow the boat heading north.", "Keep eyes on the person in the red jacket."],
+      "executionRules": ["fires CONTACT report on track break and on re-acquire", "honors stand-off distance"]
+    },
+    {
+      "priority": 10,
+      "keyword": "IDENTIFY",
+      "parameters": [
+        {"name": "target", "type": "string", "required": true, "description": "Object to classify"}
+      ],
+      "description": "Classify a specific object: type, approximate size, count, and observable activity.",
+      "naturalLanguageExamples": ["Identify the vessel at the pier.", "What is that vehicle?", "Classify the group of people."],
+      "executionRules": ["returns CONTACT report with full classification", "VLM rationale capped at 200 characters"]
+    }
+  ],
+  "responses": [
+    {"keyword": "WILCO", "meaning": "Acknowledged and will comply.", "parameters": []},
+    {"keyword": "UNABLE", "meaning": "Cannot comply with the last command.", "parameters": [{"name": "reason", "type": "string", "required": true, "description": "Why the drone cannot comply"}]},
+    {"keyword": "ROGER", "meaning": "Received and understood.", "parameters": []},
+    {"keyword": "STANDBY", "meaning": "Processing or temporarily unavailable; wait.", "parameters": []},
+    {"keyword": "CONTACT", "meaning": "Detected something matching an active task.", "parameters": [{"name": "description", "type": "string", "required": true, "description": "Plain-English description of the contact"}]},
+    {"keyword": "BINGO", "meaning": "A monitored resource has reached its minimum threshold.", "parameters": [{"name": "resource", "type": "string", "required": true, "description": "Which resource is bingo (e.g., fuel, battery)"}]},
+    {"keyword": "NODELOSS", "meaning": "Self-reported imminent loss of the node.", "parameters": []}
+  ],
+  "reportSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["type", "observedAt", "transmittedAt", "location", "scene", "contacts", "linkState"],
+    "properties": {
+      "type": {"type": "string", "enum": ["SITREP", "CONTACT", "OBSERVATION"]},
+      "observedAt": {"type": "string", "format": "date-time", "description": "ISO 8601 Zulu timestamp of the observation"},
+      "transmittedAt": {"type": "string", "format": "date-time", "description": "ISO 8601 Zulu timestamp the report hit the wire"},
+      "location": {
+        "type": "object",
+        "required": ["lat", "lon"],
+        "properties": {
+          "lat": {"type": "number", "minimum": -90, "maximum": 90},
+          "lon": {"type": "number", "minimum": -180, "maximum": 180},
+          "mgrs": {"type": "string"}
+        }
+      },
+      "scene": {"type": "string", "description": "VLM natural-language description of the current camera view"},
+      "contacts": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["description", "confidence"],
+          "properties": {
+            "description": {"type": "string"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        }
+      },
+      "linkState": {"type": "string", "enum": ["CONNECTED", "DENIED", "RECOVERING"]}
+    }
+  },
+  "rules": [
+    "ABORT and RTB always execute, even with no link.",
+    "If linkState is DENIED, queue all reports locally; flush on recovery in observedAt order.",
+    "Unparseable commands return UNABLE with reason 'command unclear, say again'.",
+    "Every command gets WILCO or UNABLE within 2 seconds.",
+    "Default altitude unit: feet AGL.",
+    "Default location: current position.",
+    "Camera scene description is embedded in every SITREP and CONTACT report.",
+    "Plain English input, structured JSON output, brevity speech reply via the on-board speaker."
+  ],
+  "examples": [
+    {
+      "operatorInput": "Go to the harbor mouth and climb to 400 feet.",
+      "parsedCommand": {
+        "commands": [
+          {"keyword": "GOTO", "parameters": {"location": "harbor mouth"}},
+          {"keyword": "CLIMB", "parameters": {"altitude": 400}}
+        ]
+      },
+      "droneResponse": {"keyword": "WILCO"}
+    },
+    {
+      "operatorInput": "Search the channel for small boats.",
+      "parsedCommand": {
+        "commands": [
+          {"keyword": "SEARCH", "parameters": {"area": "the channel", "target": "small boats"}}
+        ]
+      },
+      "droneResponse": {"keyword": "WILCO"}
+    },
+    {
+      "operatorInput": "Observe that pier for 10 minutes, report pattern of life.",
+      "parsedCommand": {
+        "commands": [
+          {"keyword": "OBSERVE", "parameters": {"target": "that pier", "duration": "PT10M", "reportInterval": "PT60S"}}
+        ]
+      },
+      "droneResponse": {"keyword": "WILCO"}
+    },
+    {
+      "operatorInput": "What do you see?",
+      "parsedCommand": {
+        "commands": [
+          {"keyword": "REPORT", "parameters": {"subject": "current scene"}}
+        ]
+      },
+      "droneResponse": {"keyword": "ROGER"}
+    },
+    {
+      "operatorInput": "Abort.",
+      "parsedCommand": {
+        "commands": [
+          {"keyword": "ABORT", "parameters": {}}
+        ]
+      },
+      "droneResponse": {"keyword": "WILCO"}
+    }
+  ]
+}

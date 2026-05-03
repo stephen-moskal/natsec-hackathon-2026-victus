@@ -1,0 +1,65 @@
+# VICTUS doctrine prompts — declarative metadata.
+#
+# Couples the doctrine artifacts in this directory to:
+#   - shared/protocol/drone_command_policy.json (operational vocabulary, source of truth)
+#   - shared/protocol/schemas/*.json            (wire format and field budgets)
+#
+# A bump to drone_command_policy.json's meta.version requires a `policy_version`
+# bump here. A major bump in any schemas/*.json $id requires a new
+# `protocol_version_range`. The runtime is expected to fail-fast on mismatch.
+
+version: "0.1.0"
+
+# Must equal drone_command_policy.json -> meta.version. Mismatch is a load error.
+policy_version: "0.2.0"
+
+# Inclusive lower, exclusive upper. Couples to schemas/*.json $id semvers
+# (envelope, command, telemetry are all 0.2.0 today).
+protocol_version_range: ">=0.2.0,<0.3.0"
+
+# Reasoning contexts. Each context maps to its own system prompt file. Doctrine
+# today covers the command-ack context only (operator turn → JSON envelope +
+# brevity reply). The periodic SITREP/CONTACT/OBSERVATION emitter is a future
+# sibling prompt — see README.md.
+contexts:
+  command_ack: doctrine.system.md
+  # report: report.system.md   # reserved; not authored yet
+
+examples:
+  command_ack:
+    file: examples.jsonl
+    count: 5
+
+# The runtime injects ASSIGN_MISSION.system_prompt between these markers in
+# section 7 of doctrine.system.md. max_tokens is advisory; runtime enforces it.
+mission_overlay_slot:
+  marker_open: "<MISSION_OVERLAY>"
+  marker_close: "</MISSION_OVERLAY>"
+  max_tokens: 400
+
+# Hard caps the runtime / http_client should enforce.
+token_budget:
+  system: 1200
+  mission_overlay_max: 400
+  response_max: 512
+
+# Per-model-family overrides applied when llama-server is loaded with that model.
+# Empirical defaults; tune per benchmark.
+#
+# Note: the doctrine output contract is plain-text line-based (CMD/REPLY/RATIONALE),
+# not JSON, so JSON-mode / grammar-constrained decoding is intentionally NOT enabled
+# here. The runtime parses lines by prefix and wraps the result into the wire JSON
+# envelope downstream — see README.md "How the runtime composes and consumes".
+model_profiles:
+  gemma3-4b:
+    temperature: 0.0
+    stop: ["\n\n", "```"]   # stop after the RATIONALE line; refuse markdown fences
+  qwen3-vl-7b:
+    temperature: 0.1
+    stop: ["\n\n", "```"]   # Qwen-VL otherwise drifts into prose after RATIONALE
+
+# SHA-256 of each prompt artifact at the time of this manifest version. The
+# runtime should verify on load and refuse to start on mismatch — protects
+# against silent in-place edits drifting from the reviewed doctrine.
+checksum:
+  doctrine.system.md: "03f7ce482cc53c7ccecbd6fa6168dcf3e1f4fe7452212c8c23cfcec6821ff5ef"

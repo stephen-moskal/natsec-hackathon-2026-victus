@@ -1,0 +1,107 @@
+{
+  "evalSet": "drone_command_adherence_v1",
+  "description": "10-command eval set for testing model adherence to the drone command policy",
+  "passThreshold": "90% per command, 100% on ABORT",
+  "tests": [
+    {
+      "id": 1,
+      "operatorInput": "Abort.",
+      "expectedCommand": {
+        "keyword": "ABORT",
+        "parameters": {}
+      }
+    },
+    {
+      "id": 2,
+      "operatorInput": "Come home.",
+      "expectedCommand": {
+        "keyword": "RTB",
+        "parameters": {}
+      }
+    },
+    {
+      "id": 3,
+      "operatorInput": "Go to the harbor mouth.",
+      "expectedCommand": {
+        "keyword": "GOTO",
+        "parameters": {
+          "location": "harbor mouth"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "operatorInput": "Climb to 500 feet.",
+      "expectedCommand": {
+        "keyword": "CLIMB",
+        "parameters": {
+          "altitude": 500,
+          "unit": "feet_AGL"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "operatorInput": "Hold over the bay for 10 minutes.",
+      "expectedCommand": {
+        "keyword": "LOITER",
+        "parameters": {
+          "location": "the bay",
+          "duration": "PT10M"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "operatorInput": "Search the channel for small boats.",
+      "expectedCommand": {
+        "keyword": "SEARCH",
+        "parameters": {
+          "target": "small boats",
+          "area": "the channel"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "operatorInput": "Observe the pier, pattern of life.",
+      "expectedCommand": {
+        "keyword": "OBSERVE",
+        "parameters": {
+          "target": "the pier",
+          "mode": "pattern_of_life"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "operatorInput": "What do you see?",
+      "expectedCommand": {
+        "keyword": "REPORT",
+        "parameters": {
+          "subject": "current scene"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "operatorInput": "Track that white boat.",
+      "expectedCommand": {
+        "keyword": "TRACK",
+        "parameters": {
+          "target": "white boat"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "operatorInput": "Identify the contact at bearing 270.",
+      "expectedCommand": {
+        "keyword": "IDENTIFY",
+        "parameters": {
+          "target": "contact at bearing 270"
+        }
+      }
+    }
+  ]
+}
