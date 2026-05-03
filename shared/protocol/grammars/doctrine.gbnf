@@ -1,0 +1,54 @@
+# VICTUS doctrine output grammar — constrains llama.cpp output to the
+# CMD/REPLY/RATIONALE line contract enforced by victus_edge.protocol.
+# Pairs with shared/protocol/prompts/doctrine_gbnf.system.md.
+#
+# Required-param presence (e.g. UNABLE must carry reason=) for the
+# command vocabulary is enforced downstream by
+# victus_edge.eval.vocabulary.required_command_params(); this grammar
+# enforces only line shape, key=value form, and value lexicality.
+#
+# Note: GBNF strips literal whitespace inside rule bodies, so every
+# space between tokens is routed through the explicit `SP` rule below.
+
+root            ::= cmd-line* reply-line rationale-line
+
+cmd-line        ::= "CMD:" SP command NL
+reply-line      ::= "REPLY:" SP reply NL
+rationale-line  ::= "RATIONALE:" SP sentence NL?
+
+command         ::= "ABORT"
+                 | "RTB"
+                 | "GOTO"     param-list
+                 | "CLIMB"    param-list
+                 | "DESCEND"  param-list
+                 | "LOITER"   param-list
+                 | "SEARCH"   param-list
+                 | "OBSERVE"  param-list
+                 | "REPORT"   param-list
+                 | "TRACK"    param-list
+                 | "IDENTIFY" param-list
+
+# Order-agnostic parameter list. Required-key validation is downstream.
+param-list      ::= (SP param)*
+param           ::= ident "=" value
+ident           ::= [a-zA-Z] [a-zA-Z0-9_]*
+value           ::= quoted-string | iso-duration | number | bare-token
+
+reply           ::= "WILCO"
+                 | "ROGER"
+                 | "STANDBY"
+                 | "NODELOSS"
+                 | "UNABLE"  SP "reason="      quoted-string
+                 | "CONTACT" SP "description=" quoted-string
+                 | "BINGO"   SP "resource="    (quoted-string | bare-token)
+
+# Lexical primitives.
+quoted-string   ::= "\"" [^"\n]* "\""
+bare-token      ::= [a-zA-Z0-9_./-]+
+number          ::= "-"? [0-9]+ ( "." [0-9]+ )?
+iso-duration    ::= "PT" duration-component duration-component? duration-component?
+duration-component ::= [0-9]+ [HMS]
+sentence        ::= [^\n]+
+
+SP              ::= " "
+NL              ::= "\n"

@@ -8,7 +8,7 @@
 # bump here. A major bump in any schemas/*.json $id requires a new
 # `protocol_version_range`. The runtime is expected to fail-fast on mismatch.
 
-version: "0.1.0"
+version: "0.2.0"
 
 # Must equal drone_command_policy.json -> meta.version. Mismatch is a load error.
 policy_version: "0.2.0"
@@ -19,14 +19,23 @@ protocol_version_range: ">=0.2.0,<0.3.0"
 
 # Reasoning contexts. Each context maps to its own system prompt file. Doctrine
 # today covers the command-ack context only (operator turn → JSON envelope +
-# brevity reply). The periodic SITREP/CONTACT/OBSERVATION emitter is a future
-# sibling prompt — see README.md.
+# brevity reply). The `_gbnf` variant pairs with a llama.cpp grammar that
+# enforces the line-based output contract at decode time, letting the prompt
+# itself stay slim (~700 tokens vs ~1742). See ../grammars/README.md.
 contexts:
   command_ack: doctrine.system.md
+  command_ack_gbnf: doctrine_gbnf.system.md
   # report: report.system.md   # reserved; not authored yet
+
+# Grammar files keyed by context. Paths are relative to this manifest.
+grammars:
+  command_ack_gbnf: ../grammars/doctrine.gbnf
 
 examples:
   command_ack:
+    file: examples.jsonl
+    count: 5
+  command_ack_gbnf:
     file: examples.jsonl
     count: 5
 
@@ -40,16 +49,17 @@ mission_overlay_slot:
 # Hard caps the runtime / http_client should enforce.
 token_budget:
   system: 1200
+  system_gbnf: 700           # slim prompt's harder cap
   mission_overlay_max: 400
   response_max: 512
 
 # Per-model-family overrides applied when llama-server is loaded with that model.
 # Empirical defaults; tune per benchmark.
 #
-# Note: the doctrine output contract is plain-text line-based (CMD/REPLY/RATIONALE),
-# not JSON, so JSON-mode / grammar-constrained decoding is intentionally NOT enabled
-# here. The runtime parses lines by prefix and wraps the result into the wire JSON
-# envelope downstream — see README.md "How the runtime composes and consumes".
+# The `_gbnf` profiles are used when the runtime loads the command_ack_gbnf
+# context. The grammar refuses markdown fences outright, so the ``` stop
+# sequence is unnecessary; temperature can rise modestly because the grammar
+# pins output shape and frees entropy budget.
 model_profiles:
   gemma3-4b:
     temperature: 0.0
@@ -57,9 +67,17 @@ model_profiles:
   qwen3-vl-7b:
     temperature: 0.1
     stop: ["\n\n", "```"]   # Qwen-VL otherwise drifts into prose after RATIONALE
+  gemma3-4b-gbnf:
+    temperature: 0.2
+    stop: ["\n\n"]
+  qwen3-vl-7b-gbnf:
+    temperature: 0.3
+    stop: ["\n\n"]
 
 # SHA-256 of each prompt artifact at the time of this manifest version. The
 # runtime should verify on load and refuse to start on mismatch — protects
 # against silent in-place edits drifting from the reviewed doctrine.
 checksum:
   doctrine.system.md: "03f7ce482cc53c7ccecbd6fa6168dcf3e1f4fe7452212c8c23cfcec6821ff5ef"
+  doctrine_gbnf.system.md: "58c639c6332fcead86a028103d34e774fba4a883cda9c4bbea2d01938c02b2c9"
+  doctrine.gbnf: "04886a825f837aefe011266e0e8660cbe8bc1cd3685900e57fa4cc6109cd5d23"

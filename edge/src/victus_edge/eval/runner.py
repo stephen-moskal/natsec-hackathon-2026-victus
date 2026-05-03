@@ -37,7 +37,10 @@ log = structlog.get_logger(__name__)
 # Repo-root resolution: edge/src/victus_edge/eval/runner.py → parents[4]
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 _PROMPTS_DIR = _REPO_ROOT / "shared" / "protocol" / "prompts"
+_GRAMMARS_DIR = _REPO_ROOT / "shared" / "protocol" / "grammars"
 _DOCTRINE_PATH = _PROMPTS_DIR / "doctrine.system.md"
+_DOCTRINE_GBNF_PATH = _PROMPTS_DIR / "doctrine_gbnf.system.md"
+_GRAMMAR_PATH = _GRAMMARS_DIR / "doctrine.gbnf"
 _EXAMPLES_PATH = _PROMPTS_DIR / "examples.jsonl"
 
 
@@ -55,8 +58,16 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _read_doctrine() -> str:
-    return _DOCTRINE_PATH.read_text()
+def _read_doctrine(*, gbnf: bool = False) -> str:
+    """Return the system-prompt text. `gbnf=True` selects the slim variant
+    paired with `doctrine.gbnf`; `False` returns the legacy full prompt.
+    """
+    return (_DOCTRINE_GBNF_PATH if gbnf else _DOCTRINE_PATH).read_text()
+
+
+def _read_grammar() -> str:
+    """GBNF grammar source for the command-ack context."""
+    return _GRAMMAR_PATH.read_text()
 
 
 def _read_few_shot_messages() -> list[dict[str, Any]]:
@@ -72,10 +83,10 @@ def _read_few_shot_messages() -> list[dict[str, Any]]:
     return messages
 
 
-def _build_messages(operator_input: str) -> list[dict[str, Any]]:
+def _build_messages(operator_input: str, *, gbnf: bool = False) -> list[dict[str, Any]]:
     """system prompt + few-shot turns + the live user turn."""
     return [
-        {"role": "system", "content": _read_doctrine()},
+        {"role": "system", "content": _read_doctrine(gbnf=gbnf)},
         *_read_few_shot_messages(),
         {"role": "user", "content": operator_input},
     ]
@@ -88,12 +99,19 @@ async def _run_one_test(
     max_tokens: int,
     temperature: float,
     stop: list[str] | None,
+    use_grammar: bool = False,
 ) -> TestRecord:
     operator_input = test["operatorInput"]
     expected = test.get("expectedCommand", {})
-    messages = _build_messages(operator_input)
+    messages = _build_messages(operator_input, gbnf=use_grammar)
+    grammar = _read_grammar() if use_grammar else None
 
-    log.info("test_dispatch", test_id=test["id"], operator_input=operator_input)
+    log.info(
+        "test_dispatch",
+        test_id=test["id"],
+        operator_input=operator_input,
+        gbnf=use_grammar,
+    )
 
     started = time.monotonic()
     try:
@@ -102,6 +120,7 @@ async def _run_one_test(
             max_tokens=max_tokens,
             temperature=temperature,
             stop=stop,
+            grammar=grammar,
         )
         error: str | None = None
     except Exception as exc:
@@ -129,8 +148,13 @@ async def run_eval_set(
     max_tokens: int = 512,
     temperature: float = 0.1,
     stop: list[str] | None = None,
+    use_grammar: bool = False,
 ) -> tuple[Path, Path]:
     """Drive every test in the eval set; write JSONL + markdown.
+
+    `use_grammar=True` swaps the legacy doctrine.system.md for the slim
+    doctrine_gbnf.system.md and constrains the sampler with doctrine.gbnf.
+    `False` preserves legacy behavior.
 
     Returns (jsonl_path, md_path).
     """
@@ -140,8 +164,9 @@ async def run_eval_set(
 
     timestamp = _utc_now().strftime("%Y%m%dT%H%M%SZ")
     output_dir.mkdir(parents=True, exist_ok=True)
-    jsonl_path = output_dir / f"qwen_adherence_{timestamp}.jsonl"
-    md_path = output_dir / f"qwen_adherence_{timestamp}.md"
+    suffix = "_gbnf" if use_grammar else ""
+    jsonl_path = output_dir / f"qwen_adherence_{timestamp}{suffix}.jsonl"
+    md_path = output_dir / f"qwen_adherence_{timestamp}{suffix}.md"
 
     records: list[TestRecord] = []
     for test in tests:
@@ -150,6 +175,7 @@ async def run_eval_set(
             max_tokens=max_tokens,
             temperature=temperature,
             stop=stop,
+            use_grammar=use_grammar,
         )
         records.append(rec)
         # Write each row immediately so a crash mid-run doesn't lose data.
