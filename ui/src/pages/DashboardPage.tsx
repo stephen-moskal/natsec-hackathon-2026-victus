@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import PageHeader from "../components/layout/PageHeader";
 import DroneGrid from "../components/drones/DroneGrid";
+import CommandPalette from "../components/commands/CommandPalette";
 import { api } from "../api/client";
 import type { Drone } from "../api/types";
 
@@ -49,11 +50,18 @@ export default function DashboardPage() {
           BFF error: {error}
         </div>
       )}
-      {loading && drones.length === 0 ? (
-        <div className="text-sm text-gray-500 italic">Loading fleet…</div>
-      ) : (
-        <DroneGrid drones={drones} />
-      )}
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
+        <div>
+          {loading && drones.length === 0 ? (
+            <div className="text-sm text-gray-500 italic">Loading fleet…</div>
+          ) : (
+            <DroneGrid drones={drones} />
+          )}
+        </div>
+        <div>
+          <CommandPalette drones={drones} />
+        </div>
+      </div>
     </div>
   );
 }

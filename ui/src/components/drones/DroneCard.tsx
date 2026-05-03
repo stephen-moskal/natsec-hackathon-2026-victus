@@ -3,6 +3,7 @@ import Card from "../shared/Card";
 import StatusChip from "../shared/StatusChip";
 import LinkStatusDot from "./LinkStatusDot";
 import TelemetryPanel from "./TelemetryPanel";
+import CommandList from "./CommandList";
 import { linkStatusFrom } from "../../lib/linkStatus";
 import { timeAgo } from "../../lib/formatTime";
 
@@ -38,6 +39,12 @@ export default function DroneCard({ drone }: { drone: Drone }) {
         <span className="text-gray-500">
           State: <span className="text-gray-200">{drone.state}</span>
         </span>
+      </div>
+
+      {/* recent commands */}
+      <div className="border-t border-gray-800 pt-2">
+        <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">Recent Commands</div>
+        <CommandList deviceId={drone.drone_id} />
       </div>
 
       {/* LLM trace placeholder */}
