@@ -1,14 +1,39 @@
-"""Edge node event loop.
+"""Edge node entrypoint.
 
-Phase 1.0 wiring: two concurrent asyncio tasks share a single FoundryClient.
+Single supervisor process for the Jetson container. Owns:
 
-  - command_poller: every COMMAND_POLL_INTERVAL_S, calls pollCommands, logs
-    each new command, immediately ACKs with result=ACCEPTED. The reasoner is
-    not yet wired in — Phase 2 plugs into the same dispatch point.
-  - telemetry_emitter: every POSITION_EMIT_INTERVAL_S, emits a Position
-    heartbeat with mocked coordinates. Real GPS lands in Phase 2.
+  * a llama-server child process (via `LlamaServer`)
+  * optionally a USB webcam (`WebcamSource` / `GstSource`)
+  * optionally a Foundry comms client (`FoundryClient`) — produces
+    poll/telemetry/frame-server traffic in production mode
 
-Run: `python -m victus_edge.main` (after `pip install -e .`).
+CLI flags switch between modes:
+
+  --model {gemma4|qwen-vl}   pick the GGUF + mmproj paths to launch
+  --model-path PATH          override model path explicitly
+  --mmproj-path PATH         override mmproj path explicitly
+  --webcam [N]               open /dev/videoN (default 0 if flag present)
+  --gst-webcam [N]           open /dev/videoN via Tegra GStreamer
+  --fps F                    webcam capture cadence (default 1.0)
+  --test                     skip Foundry, print VLM descriptions of frames
+  --no-llama-server          assume llama-server is already running externally
+  --llm-server-url URL       base URL for llama-server (default 127.0.0.1:8080)
+
+Resolution order for model paths: --model-path/--mmproj-path > --model
+(table) > env vars baked into the Docker image.
+
+Production mode runs three concurrent asyncio tasks that share a FoundryClient:
+
+  - _command_poller: polls Foundry for PENDING commands, logs each, ACKs with
+    WILCO (or ROGER for read-only verbs like REPORT). Schema-invalid commands
+    get an UNABLE ACK so the operator UI flips to REJECTED.
+  - _telemetry_emitter: emits a Position heartbeat each tick along a scripted
+    SF→Alcatraz route (mocked GPS for the demo).
+  - run_frame_server: serves the latest webcam JPEG over local HTTP for the
+    BFF, and publishes FrameThumbnail telemetry events to Foundry.
+
+Test mode (--test) runs only the VLM describe loop against the webcam and
+prints captions to stdout — no Foundry traffic.
 """
 
 import argparse
@@ -20,10 +45,14 @@ from typing import Any
 
 import structlog
 
-from .comms.auth import TokenProvider
 from .comms.foundry_client import FoundryClient
 from .comms.protocol import encode_telemetry
 from .config import Config, load
+from .llm.http_client import LlamaCppClient
+from .llm.server import LlamaServer
+from .runtime.factory import build_foundry_client, build_vision
+from .vision.frame_server import run_frame_server
+from .vision.pipeline import GstSource, WebcamSource
 
 
 log = structlog.get_logger(__name__)
@@ -41,6 +70,16 @@ _MODEL_TABLE: dict[str, tuple[str, str]] = {
 }
 
 _DESCRIBE_PROMPT = "Describe what you see in this image briefly."
+
+
+# Verbs whose ACK should be ROGER (received & understood) rather than WILCO
+# (acknowledged & will comply). Per drone_command_policy.json: REPORT is a
+# read-only request — there's nothing to "comply" with.
+_ROGER_VERBS: frozenset[str] = frozenset({"REPORT"})
+
+
+def _ack_result_for(verb: str) -> str:
+    return "ROGER" if verb in _ROGER_VERBS else "WILCO"
 
 
 def _configure_logging(level: str) -> None:
@@ -156,16 +195,6 @@ def _build_overrides(args: argparse.Namespace) -> dict[str, Any]:
     return overrides
 
 
-# Verbs whose ACK should be ROGER (received & understood) rather than WILCO
-# (acknowledged & will comply). Per drone_command_policy.json: REPORT is a
-# read-only request — there's nothing to "comply" with.
-_ROGER_VERBS: frozenset[str] = frozenset({"REPORT"})
-
-
-def _ack_result_for(verb: str) -> str:
-    return "ROGER" if verb in _ROGER_VERBS else "WILCO"
-
-
 async def _command_poller(client: FoundryClient, cfg: Config) -> None:
     cursor: str | None = None
     while True:
@@ -232,23 +261,54 @@ async def _telemetry_emitter(client: FoundryClient, cfg: Config) -> None:
         await asyncio.sleep(cfg.position_emit_interval_s)
 
 
-async def run_async() -> None:
-    cfg = load()
-    _configure_logging(cfg.log_level)
-    log.info("edge_starting", drone_id=cfg.drone_id, auth_mode=cfg.foundry_auth_mode)
+async def _describe_loop(webcam: WebcamSource | GstSource, llm: LlamaCppClient) -> None:
+    """Read frames, send to llama-server, print descriptions. Used in --test mode."""
+    frame_idx = 0
+    async for jpeg in webcam.frames():
+        frame_idx += 1
+        try:
+            description = await llm.describe_frame(jpeg, prompt=_DESCRIBE_PROMPT)
+        except Exception as exc:
+            log.error("describe_frame_failed", frame_idx=frame_idx, error=str(exc))
+            continue
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # stdout (not structlog) so the description is the primary visible output
+        print(f"[{ts}] frame={frame_idx} description={description.strip()}", flush=True)
 
-    token_provider = _build_token_provider(cfg)
-    async with FoundryClient(
-        token_provider=token_provider,
-        listener_url=cfg.foundry_listener_url,
-        functions_url=cfg.foundry_functions_url,
-        drone_id=cfg.drone_id,
-        buffer_path=cfg.telemetry_buffer_path,
-    ) as client:
-        await asyncio.gather(
-            _command_poller(client, cfg),
-            _telemetry_emitter(client, cfg),
+
+async def _run_test_mode(cfg: Config) -> None:
+    """--test path: llama-server (optional) + webcam → VLM → print loop."""
+    webcam = build_vision(cfg)
+    if webcam is None:
+        raise RuntimeError(
+            "--test requires a webcam source; pass --webcam N or set VICTUS_VISION_SOURCE=webcam:N"
         )
+
+    if cfg.manage_llama_server:
+        if not cfg.llm_model_path:
+            raise RuntimeError(
+                "no model path resolved — pass --model {gemma4|qwen-vl} or --model-path PATH"
+            )
+        async with LlamaServer(cfg.llm_model_path, cfg.llm_mmproj_path) as server:
+            async with LlamaCppClient(server.base_url, timeout_s=120.0) as client:
+                await _describe_loop(webcam, client)
+    else:
+        async with LlamaCppClient(cfg.llm_server_url, timeout_s=120.0) as client:
+            await _describe_loop(webcam, client)
+
+
+async def _run_production_mode(cfg: Config) -> None:
+    """Default path: optionally spawn llama-server, run Foundry poller + emitter + frame server."""
+    foundry = build_foundry_client(cfg)
+    assert foundry is not None, "production mode requires a Foundry client"
+
+    async def _run_with_server() -> None:
+        async with foundry as client:
+            await asyncio.gather(
+                _command_poller(client, cfg),
+                _telemetry_emitter(client, cfg),
+                run_frame_server(client, cfg),
+            )
 
     if cfg.manage_llama_server and cfg.llm_model_path:
         async with LlamaServer(cfg.llm_model_path, cfg.llm_mmproj_path):
