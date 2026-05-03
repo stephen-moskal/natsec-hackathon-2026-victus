@@ -5,6 +5,9 @@ import type {
   FoundryHealth,
   IssueCommandRequest,
   IssueCommandResult,
+  CreateMissionRequest,
+  AssignMissionRequest,
+  AssignMissionResult,
 } from "./types";
 
 const BFF = (import.meta.env.VITE_BFF_URL ?? "").replace(/\/$/, "") || "";
@@ -32,6 +35,9 @@ export const api = {
   commands: (deviceId: string, limit = 10, signal?: AbortSignal) =>
     jget<Command[]>(`/api/commands?deviceId=${encodeURIComponent(deviceId)}&limit=${limit}`, signal),
   missions: (signal?: AbortSignal) => jget<Mission[]>("/api/missions", signal),
+  createMission: (req: CreateMissionRequest) => jpost<Mission>("/api/missions", req),
+  assignMission: (req: AssignMissionRequest) =>
+    jpost<AssignMissionResult[]>("/api/assign-mission", req),
   issueCommand: (req: IssueCommandRequest) =>
     jpost<IssueCommandResult[]>("/api/issue-command", req),
 };

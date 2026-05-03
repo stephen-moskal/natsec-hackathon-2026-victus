@@ -1,47 +1,16 @@
-import { useEffect, useState } from "react";
 import type { Command } from "../../api/types";
-import { api } from "../../api/client";
 import { STATUS_CLASSES } from "../../lib/verbs";
 import { timeAgo } from "../../lib/formatTime";
 
-const POLL_MS = 3000;
-
-export default function CommandList({ deviceId }: { deviceId: string }) {
-  const [commands, setCommands] = useState<Command[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const ac = new AbortController();
-    let alive = true;
-    let id: number | null = null;
-
-    async function tick() {
-      try {
-        const cs = await api.commands(deviceId, 5, ac.signal);
-        if (!alive) return;
-        setCommands(cs);
-        setError(null);
-      } catch (e) {
-        if (!alive || ac.signal.aborted) return;
-        setError(e instanceof Error ? e.message : String(e));
-      }
-    }
-
-    // Stagger initial fetch by up to 3s to avoid thundering herd across N drone cards.
-    const startDelay = Math.random() * POLL_MS;
-    const startTimer = window.setTimeout(() => {
-      tick();
-      id = window.setInterval(tick, POLL_MS);
-    }, startDelay);
-
-    return () => {
-      alive = false;
-      ac.abort();
-      window.clearTimeout(startTimer);
-      if (id !== null) window.clearInterval(id);
-    };
-  }, [deviceId]);
-
+export default function CommandList({
+  commands,
+  error,
+  limit = 3,
+}: {
+  commands: Command[];
+  error?: string | null;
+  limit?: number;
+}) {
   if (error) {
     return <div className="text-[10px] text-red-400">commands: {error}</div>;
   }
@@ -51,7 +20,7 @@ export default function CommandList({ deviceId }: { deviceId: string }) {
 
   return (
     <div className="space-y-1">
-      {commands.slice(0, 3).map((c) => {
+      {commands.slice(0, limit).map((c) => {
         const cls = STATUS_CLASSES[c.status] ?? STATUS_CLASSES.PENDING;
         return (
           <div

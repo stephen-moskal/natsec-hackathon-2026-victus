@@ -36,12 +36,39 @@ export type Mission = {
   name: string;
   description: string;
   system_prompt: string;
+  objectives: string;
+  target_specs: string;
+  area_geo_json: string;
   priority: string;
   roe_profile: string;
   active: string;
   assigned_device_ids: string;
   created_at: string;
   updated_at: string;
+};
+
+export type CreateMissionRequest = {
+  name: string;
+  description: string;
+  system_prompt: string;
+  objectives?: string;
+  target_specs?: string;
+  area_geo_json?: string;
+  priority?: string;       // default ROUTINE
+  roe_profile?: string;    // default roe-default
+};
+
+export type AssignMissionRequest = {
+  mission_id: string;
+  device_ids: string[];
+  expires_in_sec?: number; // default 3600
+};
+
+export type AssignMissionResult = {
+  device_id: string;
+  ok: boolean;
+  message_id?: string;
+  error?: string;
 };
 
 export type FoundryHealth = {
